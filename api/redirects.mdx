@@ -1,0 +1,243 @@
+---
+title: Redirects
+description: How URL redirection works in Dubly
+---
+
+## Overview
+
+Any request that doesn't match `/api/*` or `/admin/*` is treated as a redirect request. Dubly extracts the domain from the `Host` header and the slug from the URL path, then performs a database lookup to find the destination.
+
+## Redirect Endpoint
+
+```http
+GET /{slug}
+```
+
+The domain is determined from the request's `Host` header.
+
+## Redirect Behavior
+
+Dubly returns different HTTP status codes based on the link's state:
+
+### Active Link - 302 Found
+
+When a link exists and is active (`is_active = true`):
+
+```http
+GET /custom-slug
+Host: short.io
+```
+
+Response:
+```http
+HTTP/1.1 302 Found
+Location: https://example.com/some/long/url
+```
+
+The browser is redirected to the destination URL.
+
+### Deleted Link - 410 Gone
+
+When a link has been soft-deleted (`is_active = false`):
+
+```http
+GET /deleted-slug
+Host: short.io
+```
+
+Response:
+```http
+HTTP/1.1 410 Gone
+Content-Type: text/plain
+
+This link is no longer active.
+```
+
+The `410 Gone` status indicates the resource was intentionally removed and won't return.
+
+### Non-Existent Link - 404 Not Found
+
+When the slug doesn't exist in the database:
+
+```http
+GET /nonexistent
+Host: short.io
+```
+
+Response:
+```http
+HTTP/1.1 404 Not Found
+```
+
+Standard 404 error page.
+
+### Empty Slug - 404 Not Found
+
+Requests to the root path are not treated as redirects:
+
+```http
+GET /
+Host: short.io
+```
+
+Response:
+```http
+HTTP/1.1 404 Not Found
+```
+
+## Status Code Reference
+
+| Status Code | Condition | Behavior |
+|-------------|-----------|----------|
+| `302 Found` | Link exists and `is_active = true` | Redirect to destination |
+| `404 Not Found` | Slug doesn't exist or empty path | Show 404 page |
+| `410 Gone` | Link exists but `is_active = false` | Show "link no longer active" message |
+| `500 Internal Server Error` | Database error | Show error page |
+
+## Why 302 Instead of 301?
+
+Dubly uses `302 Found` (temporary redirect) instead of `301 Moved Permanently` because:
+
+- **Destination can change** - You can update the destination URL without browser cache issues
+- **Analytics tracking** - Browsers don't cache 302s as aggressively, ensuring clicks are recorded
+- **Flexibility** - Links can be updated or deleted without breaking cached redirects
+
+If you need permanent redirects for SEO purposes, you can modify the redirect status code in `internal/handlers/redirect.go:75`.
+
+## Caching
+
+Dubly implements an LRU (Least Recently Used) cache to improve redirect performance:
+
+1. **Cache lookup** - Check if the domain/slug combination is in the cache
+2. **Database query** - If not cached, query the database
+3. **Cache population** - Store the result in cache for future requests
+4. **Cache invalidation** - Update/delete operations automatically invalidate affected cache entries
+
+### Cache Configuration
+
+The cache size is controlled by the `DUBLY_CACHE_SIZE` environment variable (default: 10,000 entries).
+
+```bash
+DUBLY_CACHE_SIZE=10000
+```
+
+### Cache Invalidation
+
+The cache is automatically invalidated when:
+
+- A link is updated (using the old domain/slug key)
+- A link is deleted
+
+This ensures redirects always use the current configuration.
+
+## Analytics Collection
+
+When a redirect occurs, Dubly may record a click event with:
+
+- Timestamp
+- IP address
+- User agent (browser, OS, device type)
+- Referer
+- Geographic location (if GeoIP is configured)
+
+### Filtering Non-Human Traffic
+
+Clicks are **not recorded** if:
+
+- The user agent matches known bot signatures (search engines, link preview fetchers, HTTP clients)
+- The IP address is from a known datacenter or threat range
+
+See [Analytics](/getting-started/analytics) for more details.
+
+### Bot Detection
+
+Bots and automated tools are filtered based on User-Agent strings. Detected bots include:
+
+- **Link preview fetchers** - iMessage, Discord, Slack, WhatsApp, Facebook, Twitter, LinkedIn, Telegram
+- **Search engines** - Googlebot, Bingbot, etc.
+- **HTTP clients** - curl, wget, python-requests, Go-http-client
+- **Headless browsers** - Puppeteer, Playwright, Selenium
+- **Security scanners** - Shodan, Censys, etc.
+
+Bots still get redirected normally - they just aren't counted in analytics.
+
+## Implementation Details
+
+The redirect handler extracts the domain and slug, then:
+
+```go
+// From internal/handlers/redirect.go:23
+func (h *RedirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    host := r.Host
+    // Strip port if present
+    if h, _, err := net.SplitHostPort(host); err == nil {
+        host = h
+    }
+    host = strings.ToLower(host)
+
+    slug := strings.TrimPrefix(r.URL.Path, "/")
+    if slug == "" {
+        http.NotFound(w, r)
+        return
+    }
+
+    // Check cache first
+    link, found := h.Cache.Get(host, slug)
+    if !found {
+        var err error
+        link, err = models.GetLinkBySlugAndDomain(h.DB, slug, host)
+        if err != nil {
+            if err == sql.ErrNoRows {
+                http.NotFound(w, r)
+                return
+            }
+            http.Error(w, "internal error", http.StatusInternalServerError)
+            return
+        }
+        h.Cache.Set(host, slug, link)
+    }
+
+    if !link.IsActive {
+        w.WriteHeader(http.StatusGone)
+        w.Write([]byte("This link is no longer active."))
+        return
+    }
+
+    // Record analytics (if not a bot)
+    // ...
+
+    http.Redirect(w, r, link.Destination, http.StatusFound)
+}
+```
+
+## Multi-Domain Support
+
+Dubly supports multiple domains. Each domain can have the same slug pointing to different destinations:
+
+```
+https://short.io/docs → https://example.com/documentation
+https://go.example.com/docs → https://different-site.com/help
+```
+
+The domain is extracted from the `Host` header, so configure your DNS and web server (Caddy/nginx) to route all shortlink domains to your Dubly instance.
+
+## Security Considerations
+
+### Open Redirects
+
+Dubly is an **intentional** open redirect service - that's its purpose. However, you should:
+
+- Only share the API password with trusted users
+- Monitor created links for abuse
+- Use the `DUBLY_DOMAINS` whitelist to control which domains can host short links
+- Consider implementing additional validation on destination URLs if needed
+
+### IP Filtering
+
+The analytics collector filters traffic from known datacenters and threat IPs. This list is fetched on startup and refreshed every 24 hours from:
+
+- Datacenter IP ranges
+- Known proxy/VPN services
+- Threat intelligence feeds
+
+This reduces analytics pollution and potential abuse, but doesn't prevent redirects.

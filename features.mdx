@@ -1,0 +1,223 @@
+---
+title: Features
+description: Comprehensive overview of Dubly's capabilities
+---
+
+# Features
+
+Dubly packs powerful URL shortening capabilities into a simple, self-hosted package. Here's everything you can do with it.
+
+## Link management
+
+<CardGroup cols={2}>
+  <Card title="Custom slugs" icon="pencil">
+    Choose your own memorable short URLs or let Dubly generate random 6-character slugs
+  </Card>
+  <Card title="Multi-domain support" icon="globe">
+    Configure multiple custom domains and choose which one to use for each link
+  </Card>
+  <Card title="Bulk operations" icon="list">
+    List, search, and filter links with pagination support via the API
+  </Card>
+  <Card title="Soft deletes" icon="trash">
+    Deleted links return HTTP 410 Gone instead of 404, preserving link history
+  </Card>
+</CardGroup>
+
+### Link metadata
+
+Every link can include:
+- **Title** - A human-readable name for the link
+- **Tags** - Organize links with comma-separated tags
+- **Notes** - Internal notes for documentation
+- **Destination** - The target URL (can be updated at any time)
+
+### Automatic slug generation
+
+When you don't provide a custom slug, Dubly generates a cryptographically random 6-character Base62 string using `crypto/rand`. The system automatically retries up to 10 times if a collision occurs.
+
+## Analytics and tracking
+
+<CardGroup cols={2}>
+  <Card title="Click tracking" icon="chart-line">
+    Every click is recorded with timestamp, IP, user agent, and referrer information
+  </Card>
+  <Card title="Geographic data" icon="map">
+    Optional GeoIP integration tracks country, city, region, and coordinates
+  </Card>
+  <Card title="Device insights" icon="mobile">
+    Automatically parse browser, OS, and device type from user agents
+  </Card>
+  <Card title="Referrer tracking" icon="arrow-right">
+    See where your traffic comes from with full referrer domain extraction
+  </Card>
+</CardGroup>
+
+### Analytics metrics
+
+Dubly tracks comprehensive metrics for each link:
+
+- **Total clicks** - All-time click count
+- **Today's clicks** - Clicks from the current day
+- **7-day trends** - Current week vs. previous week comparison
+- **Top referrers** - Most common traffic sources
+- **Geographic breakdown** - Clicks by country
+- **Browser distribution** - Browser and version information
+- **Device types** - Desktop, mobile, tablet, etc.
+
+### Performance optimization
+
+Analytics are buffered in memory and flushed to SQLite in batches. The default configuration:
+- **Buffer size**: 50,000 events
+- **Flush interval**: 30 seconds
+- **Non-blocking**: Drops events when buffer is full instead of blocking redirects
+
+This ensures analytics never slow down your redirects.
+
+## Bot and traffic filtering
+
+<CardGroup cols={2}>
+  <Card title="User-Agent detection" icon="robot">
+    Filter out known bot signatures including preview fetchers and crawlers
+  </Card>
+  <Card title="IP-based filtering" icon="shield">
+    Block datacenter IPs, Tor exit nodes, and threat intelligence feeds
+  </Card>
+</CardGroup>
+
+### User-Agent filtering
+
+Dubly automatically filters requests from:
+- **Link preview fetchers**: iMessage, Discord, Slack, WhatsApp, Facebook, Twitter, LinkedIn, Telegram
+- **Search engine crawlers**: Google, Bing, and other search bots
+- **HTTP clients**: curl, wget, python-requests, ruby, java, okhttp
+- **Headless browsers**: PhantomJS, Puppeteer, Selenium
+- **Security scanners**: Various penetration testing and scanning tools
+
+Filtered bots still get redirected to the destination URL - they just aren't recorded in analytics.
+
+### IP-based filtering
+
+The datacenter checker fetches and refreshes IP blocklists every 24 hours from:
+- **Datacenter ranges**: AWS, GCP, Azure, DigitalOcean, Vultr, Oracle Cloud, Akamai, Scaleway
+- **Tor exit nodes**: Updated list from torproject.org
+- **Threat intelligence**: IPsum and GreenSnow blocklists
+
+All IP list fetches happen in parallel for fast startup and refresh.
+
+## QR code generation
+
+<CardGroup cols={2}>
+  <Card title="Dynamic generation" icon="qrcode">
+    Generate QR codes on-demand for any link via the admin UI
+  </Card>
+  <Card title="Customization" icon="palette">
+    Choose between square or circle shapes and set custom foreground colors
+  </Card>
+</CardGroup>
+
+### QR code options
+
+Customize generated QR codes with URL parameters:
+- **Shape**: `square` or `circle`
+- **Foreground color**: Any hex color (e.g., `#FF5733`)
+- **Download**: Add `dl=1` to trigger file download
+- **Format**: PNG with transparent background
+
+## Performance features
+
+<CardGroup cols={2}>
+  <Card title="LRU cache" icon="bolt">
+    Frequently accessed links are cached in memory with configurable size (default: 10,000)
+  </Card>
+  <Card title="SQLite WAL mode" icon="database">
+    Write-Ahead Logging enables concurrent reads during writes
+  </Card>
+  <Card title="Indexed queries" icon="magnifying-glass">
+    Database indexes on domain, slug, link_id, and clicked_at for fast lookups
+  </Card>
+  <Card title="Batch inserts" icon="layer-group">
+    Analytics use transaction-based batch inserts for efficient writes
+  </Card>
+</CardGroup>
+
+### Cache behavior
+
+- **Cache invalidation**: Automatic on link update or delete
+- **Key format**: `domain/slug` for unique cache entries
+- **Eviction policy**: LRU (Least Recently Used)
+- **Miss handling**: Database query with automatic cache population
+
+## RESTful API
+
+<CardGroup cols={2}>
+  <Card title="Simple authentication" icon="key">
+    Single API key via X-API-Key header for all endpoints
+  </Card>
+  <Card title="JSON responses" icon="code">
+    Clean, consistent JSON for all API responses
+  </Card>
+  <Card title="CRUD operations" icon="arrows-rotate">
+    Full create, read, update, delete support for links
+  </Card>
+  <Card title="Search and pagination" icon="filter">
+    Query links with search terms, limit, and offset parameters
+  </Card>
+</CardGroup>
+
+### API capabilities
+
+- **Create links**: POST with custom or auto-generated slugs
+- **List links**: GET with pagination, search, and filtering
+- **Get single link**: Fetch by ID with full metadata
+- **Update links**: PATCH to modify destination, title, tags, or notes
+- **Delete links**: Soft delete that returns 410 Gone on redirect
+
+All API routes require the `X-API-Key` header for authentication.
+
+## Admin dashboard
+
+The built-in web interface provides:
+
+- **Link management**: Create, edit, and delete links without API calls
+- **Analytics views**: Per-link and global analytics dashboards
+- **QR code generation**: Download QR codes with customization options
+- **Search and filtering**: Find links quickly by slug, destination, title, or tags
+- **Session-based auth**: Secure login with password protection
+
+Access the dashboard at `/admin/` on your Dubly instance.
+
+## Deployment features
+
+<CardGroup cols={2}>
+  <Card title="One-line install" icon="terminal">
+    Automated script handles Go, Caddy, systemd, and firewall configuration
+  </Card>
+  <Card title="Automatic HTTPS" icon="lock">
+    Caddy provides automatic SSL certificate management
+  </Card>
+  <Card title="Graceful shutdown" icon="power-off">
+    Waits for in-flight requests and flushes analytics before stopping
+  </Card>
+  <Card title="Update script" icon="arrows-rotate">
+    Built-in update mechanism with `--update` flag
+  </Card>
+</CardGroup>
+
+### Production ready
+
+Dubly includes everything needed for production deployment:
+- **Systemd service**: Auto-restart on failure
+- **Firewall rules**: UFW configuration for secure access
+- **Domain management**: Add new domains with the `add-domain.sh` script
+- **Optional S3 backups**: Configure automated database backups to S3
+- **GeoIP support**: Optional MaxMind GeoLite2 integration
+
+## Configuration flexibility
+
+All settings are managed via environment variables:
+- **Required**: Password, allowed domains
+- **Optional**: Port, database path, GeoIP path, buffer sizes, cache size, app name
+- **Defaults**: Sensible production defaults for all optional settings
+
+See the [Configuration guide](/configuration) for complete details.

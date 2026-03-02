@@ -1,0 +1,388 @@
+---
+title: Local development
+description: Set up a development environment for contributing to Dubly or customizing your installation
+---
+
+Run Dubly locally for development, testing, or debugging.
+
+## Prerequisites
+
+- Go 1.24 or later
+- Git
+
+## Quick start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/scmmishra/dubly.git
+    cd dubly
+    ```
+  </Step>
+  
+  <Step title="Build the binary">
+    ```bash
+    go build -o dubly ./cmd/server
+    ```
+    
+    This compiles the main server from `cmd/server/main.go`.
+  </Step>
+  
+  <Step title="Set required environment variables">
+    Dubly requires two environment variables to start:
+    
+    ```bash
+    export DUBLY_PASSWORD=dev-secret-key
+    export DUBLY_DOMAINS=localhost:8080,short.test
+    ```
+    
+    <Note>
+      For local development, use `localhost:8080` as one of your domains. This allows you to access both the API and admin UI on `http://localhost:8080`.
+    </Note>
+  </Step>
+  
+  <Step title="Run the server">
+    ```bash
+    ./dubly
+    ```
+    
+    You should see:
+    
+    ```
+    dubly listening on :8080
+    ```
+  </Step>
+  
+  <Step title="Test the API">
+    In another terminal:
+    
+    ```bash
+    curl http://localhost:8080/api/links \
+      -H "X-API-Key: dev-secret-key"
+    ```
+  </Step>
+</Steps>
+
+## One-line dev server
+
+Combine build and run:
+
+```bash
+go build -o dubly ./cmd/server && \
+DUBLY_PASSWORD=dev-secret-key \
+DUBLY_DOMAINS=localhost:8080 \
+./dubly
+```
+
+Or use `go run` (rebuilds on every start):
+
+```bash
+DUBLY_PASSWORD=dev-secret-key \
+DUBLY_DOMAINS=localhost:8080 \
+go run ./cmd/server
+```
+
+## Environment variables for development
+
+All configuration is through environment variables. Here's a typical development setup:
+
+```bash
+# Required
+export DUBLY_PASSWORD=dev-secret-key
+export DUBLY_DOMAINS=localhost:8080
+
+# Optional (with defaults shown)
+export DUBLY_PORT=8080                    # Server port
+export DUBLY_DB_PATH=./dubly.db          # SQLite database path
+export DUBLY_APP_NAME=Dubly              # Name in admin UI
+export DUBLY_GEOIP_PATH=                 # Path to GeoLite2-City.mmdb
+export DUBLY_FLUSH_INTERVAL=30s          # Analytics flush frequency
+export DUBLY_BUFFER_SIZE=50000           # Analytics buffer size
+export DUBLY_CACHE_SIZE=10000            # Max cached redirects
+```
+
+See the [Configuration](/configuration) page for details on each variable.
+
+## Project structure
+
+```
+cmd/
+  server/main.go           # Entry point, router setup, graceful shutdown
+  seed/main.go             # Database seeding tool
+  bench/main.go            # Benchmark tool
+
+internal/
+  config/                  # Environment variable loading
+  db/                      # SQLite connection, migrations
+  models/                  # Link and Click models (no ORM)
+  slug/                    # Random slug generation (Base62)
+  cache/                   # LRU cache for redirects
+  geo/                     # MaxMind GeoIP lookup
+  analytics/               # Buffered click collector
+  datacenter/              # Bot and datacenter IP filtering
+  handlers/                # HTTP handlers for API and redirects
+  web/                     # Admin UI (HTML templates, sessions)
+
+scripts/
+  install.sh               # Production installer
+  start.sh                 # Litestream wrapper for S3 backups
+  add-domain.sh            # Add domain to existing install
+```
+
+## Testing
+
+Run all tests:
+
+```bash
+go test ./internal/... -v
+```
+
+Test a specific package:
+
+```bash
+go test ./internal/models -v
+go test ./internal/handlers -v
+```
+
+### Testing philosophy
+
+Dubly uses **real infrastructure** instead of mocks:
+
+- Every test gets a fresh in-memory SQLite database (`:memory:`)
+- Handler tests use a real chi router wired identically to production
+- No third-party testing frameworks (standard library only)
+
+Example test structure from `internal/models/link_test.go`:
+
+```go
+func testDB(t *testing.T) *sql.DB {
+    t.Helper()
+    db, err := sql.Open("sqlite", ":memory:")
+    if err != nil {
+        t.Fatalf("open: %v", err)
+    }
+    if err := db.RunMigrations(); err != nil {
+        t.Fatalf("migrate: %v", err)
+    }
+    return db
+}
+
+func TestCreateLink(t *testing.T) {
+    db := testDB(t)
+    defer db.Close()
+    
+    // Test logic using real database...
+}
+```
+
+See `CLAUDE.md` in the repository for detailed testing principles.
+
+## Development workflow
+
+<Steps>
+  <Step title="Make changes">
+    Edit code in your editor.
+  </Step>
+  
+  <Step title="Run tests">
+    ```bash
+    go test ./internal/... -v
+    ```
+  </Step>
+  
+  <Step title="Rebuild and run">
+    ```bash
+    go build -o dubly ./cmd/server
+    DUBLY_PASSWORD=dev-secret-key DUBLY_DOMAINS=localhost:8080 ./dubly
+    ```
+  </Step>
+  
+  <Step title="Test your changes">
+    Use curl or the admin UI to verify behavior.
+  </Step>
+</Steps>
+
+## Database during development
+
+Dubly creates `dubly.db` in the working directory by default. To reset your database:
+
+```bash
+rm dubly.db
+./dubly  # Migrations run automatically on startup
+```
+
+To use a different path:
+
+```bash
+export DUBLY_DB_PATH=/tmp/dubly-dev.db
+./dubly
+```
+
+## GeoIP in development
+
+Geo lookups are optional. Without a GeoIP database, Dubly runs normally but skips geographic data in analytics.
+
+To test GeoIP locally:
+
+<Steps>
+  <Step title="Get a MaxMind license">
+    Sign up for a free license at [maxmind.com/en/geolite2/signup](https://www.maxmind.com/en/geolite2/signup)
+  </Step>
+  
+  <Step title="Download GeoLite2-City">
+    ```bash
+    curl -o /tmp/geoip.tar.gz -G \
+      --data-urlencode "edition_id=GeoLite2-City" \
+      --data-urlencode "license_key=YOUR_KEY" \
+      --data-urlencode "suffix=tar.gz" \
+      "https://download.maxmind.com/app/geoip_download"
+    
+    tar -xzf /tmp/geoip.tar.gz -C /tmp --wildcards '*.mmdb'
+    mv /tmp/GeoLite2-City_*/GeoLite2-City.mmdb ./GeoLite2-City.mmdb
+    ```
+  </Step>
+  
+  <Step title="Point Dubly to the database">
+    ```bash
+    export DUBLY_GEOIP_PATH=./GeoLite2-City.mmdb
+    ./dubly
+    ```
+  </Step>
+</Steps>
+
+## Seeding test data
+
+The repository includes a seeding tool:
+
+```bash
+go run ./cmd/seed
+```
+
+This creates sample links in your development database.
+
+## Benchmarking
+
+Test redirect performance:
+
+```bash
+go run ./cmd/bench
+```
+
+This measures throughput and latency for cached and uncached redirects.
+
+## Hot reload during development
+
+For automatic rebuilds on file changes, use a tool like [air](https://github.com/cosmtrek/air):
+
+```bash
+go install github.com/cosmtrek/air@latest
+
+# Create .air.toml
+air init
+
+# Run with hot reload
+air
+```
+
+Example `.air.toml`:
+
+```toml
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/dubly ./cmd/server"
+bin = "tmp/dubly"
+full_bin = "DUBLY_PASSWORD=dev-secret-key DUBLY_DOMAINS=localhost:8080 ./tmp/dubly"
+include_ext = ["go", "html"]
+exclude_dir = ["tmp"]
+```
+
+## Debugging
+
+### Enable request logging
+
+The chi logger middleware is already enabled. Every request logs to stdout:
+
+```
+2026/03/02 10:30:00 "GET /api/links HTTP/1.1" from 127.0.0.1:54321 - 200 0B in 1.234ms
+```
+
+### Use Delve for breakpoints
+
+Install Delve:
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+Run with debugger:
+
+```bash
+DUBLY_PASSWORD=dev-secret-key DUBLY_DOMAINS=localhost:8080 \
+dlv debug ./cmd/server
+```
+
+Set breakpoints:
+
+```
+(dlv) break internal/handlers/redirect.go:42
+(dlv) continue
+```
+
+## Common development tasks
+
+### Add a new API endpoint
+
+1. Add handler method to `internal/handlers/links.go`
+2. Register route in `cmd/server/main.go`:
+   ```go
+   r.Get("/api/links/stats", linkHandler.Stats)
+   ```
+3. Test with curl
+
+### Modify database schema
+
+1. Edit migrations in `internal/db/migrations.go`
+2. Delete `dubly.db` to rebuild from scratch
+3. Update model methods in `internal/models/`
+4. Add tests for new schema behavior
+
+### Change redirect logic
+
+1. Edit `internal/handlers/redirect.go`
+2. Update cache invalidation if needed
+3. Run `go test ./internal/handlers -v`
+4. Test manually:
+   ```bash
+   curl -I http://localhost:8080/your-slug
+   ```
+
+## Contributing
+
+Before submitting a pull request:
+
+1. **Run tests**: `go test ./internal/... -v`
+2. **Run go fmt**: `go fmt ./...`
+3. **Check for issues**: `go vet ./...`
+4. **Update tests** if you changed behavior
+5. **Document** any new environment variables
+
+See [CONTRIBUTING.md](https://github.com/scmmishra/dubly/blob/main/CONTRIBUTING.md) for more.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Features" icon="sparkles" href="/features">
+    Explore all of Dubly's capabilities
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Complete API documentation for all endpoints
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Learn about environment variables and settings
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/deployment/production-setup">
+    Deploy to production with automated setup
+  </Card>
+</CardGroup>

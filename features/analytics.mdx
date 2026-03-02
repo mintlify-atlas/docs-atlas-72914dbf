@@ -1,0 +1,311 @@
+---
+title: Analytics
+description: Track clicks with detailed metrics including geolocation, browser, device, and referer data
+---
+
+## Overview
+
+Dubly automatically tracks every click on your short links, capturing detailed analytics data including IP address, user agent, referer, geolocation, browser information, device type, and operating system.
+
+## Data Collection Pipeline
+
+### Non-blocking Architecture
+
+Analytics collection is designed to never slow down redirects. When a click occurs, the data is pushed to an in-memory buffer and immediately returns:
+
+```go
+// Push sends a click event non-blocking. Drops the event if buffer is full.
+func (c *Collector) Push(click RawClick) {
+    select {
+    case c.ch <- click:
+    default:
+        // buffer full, drop event
+    }
+}
+```
+
+<Info>
+If the analytics buffer is full, events are silently dropped rather than slowing down the redirect. This ensures short links remain fast even under extreme load.
+</Info>
+
+### Buffering and Flush Behavior
+
+The analytics collector uses a buffered channel configured via environment variables:
+
+- `DUBLY_BUFFER_SIZE` (default: 50,000): Maximum events to buffer in memory
+- `DUBLY_FLUSH_INTERVAL` (default: 30s): How often to flush buffered events to database
+
+Events are flushed in batches using a background goroutine as defined in internal/analytics/collector.go:58:
+
+```go
+func (c *Collector) run(interval time.Duration) {
+    defer close(c.done)
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ticker.C:
+            c.flush()
+        case <-c.stop:
+            c.flush()
+            return
+        }
+    }
+}
+```
+
+<Tip>
+For high-traffic installations, increase `DUBLY_BUFFER_SIZE` to prevent event drops. For real-time analytics, decrease `DUBLY_FLUSH_INTERVAL`.
+</Tip>
+
+## Metrics Collected
+
+Each click captures the following data:
+
+### Request Metadata
+
+- **IP Address**: Client IP (respects X-Forwarded-For and X-Real-IP headers)
+- **User Agent**: Full user agent string
+- **Referer**: HTTP referer header
+- **Referer Domain**: Extracted hostname from referer URL
+- **Timestamp**: Click time in UTC
+
+### Parsed User Agent Data
+
+- **Browser**: Browser name (e.g., "Chrome", "Firefox")
+- **Browser Version**: Full version string
+- **Operating System**: OS name (e.g., "Windows", "macOS", "Linux")
+- **Device Type**: One of `desktop`, `mobile`, or `bot`
+
+### Geolocation Data
+
+If GeoIP is configured (`DUBLY_GEOIP_PATH` environment variable), Dubly enriches each click with:
+
+- **Country**: ISO country code
+- **City**: City name
+- **Region**: State or region
+- **Latitude/Longitude**: Geographic coordinates
+
+## Data Enrichment
+
+Raw click events are enriched before insertion using the `enrich` function in internal/analytics/collector.go:101:
+
+```go
+func (c *Collector) enrich(raw RawClick) models.Click {
+    ua := useragent.New(raw.UserAgent)
+    browserName, browserVersion := ua.Browser()
+
+    deviceType := "desktop"
+    if ua.Mobile() {
+        deviceType = "mobile"
+    } else if ua.Bot() {
+        deviceType = "bot"
+    }
+
+    var refererDomain string
+    if raw.Referer != "" {
+        if u, err := url.Parse(raw.Referer); err == nil {
+            refererDomain = u.Host
+        }
+    }
+
+    geoResult := c.geo.Lookup(raw.IP)
+
+    return models.Click{
+        LinkID:         raw.LinkID,
+        ClickedAt:      raw.ClickedAt,
+        IP:             raw.IP,
+        UserAgent:      raw.UserAgent,
+        Referer:        raw.Referer,
+        RefererDomain:  refererDomain,
+        Country:        geoResult.Country,
+        City:           geoResult.City,
+        Region:         geoResult.Region,
+        Latitude:       geoResult.Latitude,
+        Longitude:      geoResult.Longitude,
+        Browser:        browserName,
+        BrowserVersion: browserVersion,
+        OS:             ua.OS(),
+        DeviceType:     deviceType,
+    }
+}
+```
+
+## Bot and Datacenter Filtering
+
+Dubly automatically filters out bot traffic and requests from known datacenters to provide accurate human click analytics.
+
+### Bot Detection
+
+Bot filtering uses a two-tier approach in internal/analytics/bot.go:
+
+1. **User agent library detection**: Uses the `mssola/useragent` library's built-in bot detection
+2. **Signature matching**: Checks user agent against a comprehensive list of bot signatures
+
+```go
+func IsBot(rawUA string) bool {
+    ua := useragent.New(rawUA)
+    if ua.Bot() {
+        return true
+    }
+    lower := strings.ToLower(rawUA)
+    for _, sig := range botSignatures {
+        if strings.Contains(lower, sig) {
+            return true
+        }
+    }
+    return false
+}
+```
+
+The bot signature list includes:
+
+- Generic bot patterns ("bot", "spider", "crawl")
+- Link preview fetchers (WhatsApp, Slack, Telegram, Facebook, Twitter)
+- Search engine bots (Google, Bing)
+- HTTP client libraries (curl, wget, python-requests, Go HTTP client)
+- Headless browsers (PhantomJS, Puppeteer)
+- Security scanners
+
+### Datacenter Filtering
+
+Dubly maintains an in-memory list of datacenter IP ranges and threat blocklists, automatically refreshed every 24 hours from multiple sources:
+
+**Cloud Provider Ranges:**
+- AWS, Google Cloud, Azure (via main datacenter list)
+- Oracle Cloud Infrastructure (OCI)
+- DigitalOcean
+- Vultr
+- Akamai CDN
+- Scaleway
+
+**Threat Intelligence:**
+- Tor exit nodes
+- IPsum threat feed
+- GreenSnow blocklist
+
+The checker performs concurrent lookups as defined in internal/datacenter/checker.go:69:
+
+```go
+func (c *Checker) IsBlocked(ip string) bool {
+    parsed := net.ParseIP(ip)
+    if parsed == nil {
+        return false
+    }
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    if c.blockedIPs[ip] {
+        return true
+    }
+    for _, n := range c.ranges {
+        if n.Contains(parsed) {
+            return true
+        }
+    }
+    return false
+}
+```
+
+<Note>
+Datacenter filtering happens before analytics collection. Requests from datacenters and known threat IPs are still redirected, but clicks are not recorded.
+</Note>
+
+### Analytics Collection Logic
+
+The redirect handler checks both bot and datacenter status before recording analytics in internal/handlers/redirect.go:65:
+
+```go
+if !analytics.IsBot(r.UserAgent()) && (h.DC == nil || !h.DC.IsBlocked(ip)) {
+    h.Collector.Push(analytics.RawClick{
+        LinkID:    link.ID,
+        ClickedAt: time.Now().UTC(),
+        IP:        ip,
+        UserAgent: r.UserAgent(),
+        Referer:   r.Referer(),
+    })
+}
+```
+
+## Database Storage
+
+Enriched click events are batch-inserted into the database using a transaction in internal/models/click.go:28:
+
+```go
+func BatchInsertClicks(db *sql.DB, clicks []Click) error {
+    tx, err := db.Begin()
+    if err != nil {
+        return fmt.Errorf("begin tx: %w", err)
+    }
+    defer tx.Rollback()
+
+    stmt, err := tx.Prepare(`INSERT INTO clicks (...) VALUES (?, ?, ...)`)
+    if err != nil {
+        return fmt.Errorf("prepare: %w", err)
+    }
+    defer stmt.Close()
+
+    for _, c := range clicks {
+        _, err := stmt.Exec(
+            c.LinkID, c.ClickedAt, c.IP, c.UserAgent, c.Referer, c.RefererDomain,
+            c.Country, c.City, c.Region, c.Latitude, c.Longitude,
+            c.Browser, c.BrowserVersion, c.OS, c.DeviceType,
+        )
+        if err != nil {
+            return fmt.Errorf("insert click: %w", err)
+        }
+    }
+
+    return tx.Commit()
+}
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DUBLY_BUFFER_SIZE` | 50000 | Maximum click events to buffer in memory |
+| `DUBLY_FLUSH_INTERVAL` | 30s | How often to flush events to database |
+| `DUBLY_GEOIP_PATH` | "" | Path to MaxMind GeoIP database file |
+
+### GeoIP Setup
+
+To enable geolocation enrichment:
+
+1. Download a MaxMind GeoLite2 or GeoIP2 City database
+2. Set `DUBLY_GEOIP_PATH` to the database file path
+3. Restart Dubly
+
+If no GeoIP database is configured, geolocation fields will be empty but analytics will still be collected.
+
+<Tip>
+MaxMind offers a free GeoLite2 City database. Sign up at https://www.maxmind.com/en/geolite2/signup to download.
+</Tip>
+
+## Click Data Schema
+
+Clicks are stored with the following structure defined in internal/models/click.go:9:
+
+```go
+type Click struct {
+    ID             int64
+    LinkID         int64
+    ClickedAt      time.Time
+    IP             string
+    UserAgent      string
+    Referer        string
+    RefererDomain  string
+    Country        string
+    City           string
+    Region         string
+    Latitude       float64
+    Longitude      float64
+    Browser        string
+    BrowserVersion string
+    OS             string
+    DeviceType     string
+}
+```

@@ -1,0 +1,262 @@
+---
+title: QR Codes
+description: Generate customizable QR codes for short links
+---
+
+## Overview
+
+Dubly automatically generates QR codes for every short link. QR codes can be customized with different shapes, colors, and download options.
+
+## Accessing QR Codes
+
+QR codes are available through the admin web interface and via direct API endpoint:
+
+### Web Interface
+
+In the admin panel, each link has a QR code button that opens a customization dialog with:
+- Live preview
+- Shape selection (square or circle)
+- Color picker for foreground color
+- Download button
+
+### API Endpoint
+
+```
+GET /admin/links/{id}/qr?shape=circle&fg=%23FF5733&dl=1
+```
+
+**Parameters:**
+
+- `shape` (optional): `square` (default) or `circle`
+- `fg` (optional): Hex color code for foreground (e.g., `#FF5733`)
+- `dl` (optional): Set to `1` to trigger browser download with filename
+
+## Implementation Details
+
+QR code generation is handled in internal/web/qr.go:27 using the `yeqown/go-qrcode` library:
+
+```go
+func (h *AdminHandler) LinkQRCode(w http.ResponseWriter, r *http.Request) {
+    id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+    if err != nil {
+        http.Error(w, "invalid id", http.StatusBadRequest)
+        return
+    }
+
+    link := &models.Link{ID: id}
+    if err := models.GetLinkByID(h.db, link); err != nil {
+        http.NotFound(w, r)
+        return
+    }
+    link.FillShortURL()
+
+    // Parse query params with defaults
+    shape := r.URL.Query().Get("shape") // square|circle
+    fg := r.URL.Query().Get("fg")       // hex color
+    dl := r.URL.Query().Get("dl")       // 0|1
+
+    // Build image options — always transparent background
+    opts := []standard.ImageOption{
+        standard.WithBuiltinImageEncoder(standard.PNG_FORMAT),
+        standard.WithQRWidth(10),
+        standard.WithBorderWidth(20),
+        standard.WithBgTransparent(),
+    }
+
+    if shape == "circle" {
+        opts = append(opts, standard.WithCircleShape())
+    }
+
+    if isValidHex(fg) {
+        opts = append(opts, standard.WithFgColorRGBHex(fg))
+    }
+```
+
+### QR Code Options
+
+The following options are applied to every QR code:
+
+- **Format**: PNG
+- **QR Width**: 10 pixels per module
+- **Border Width**: 20 pixels
+- **Background**: Transparent (always)
+
+### Color Validation
+
+Hex color codes are validated using a regular expression in internal/web/qr.go:17:
+
+```go
+var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+func isValidHex(s string) bool {
+    return hexColorRe.MatchString(s)
+}
+```
+
+Only valid 6-character hex codes (e.g., `#FF5733`) are accepted. Invalid colors are ignored and the default black is used.
+
+## Response Headers
+
+QR codes are served with appropriate caching and content headers in internal/web/qr.go:77:
+
+```go
+w.Header().Set("Content-Type", "image/png")
+w.Header().Set("Cache-Control", "public, max-age=3600")
+if dl == "1" {
+    w.Header().Set("Content-Disposition", "attachment; filename=\""+link.Slug+"-qr.png\"")
+}
+w.Write(buf.Bytes())
+```
+
+### Cache Control
+
+QR code images are cached for 1 hour (`max-age=3600`). This reduces server load for frequently accessed QR codes while allowing reasonable update times if the link destination changes.
+
+### Download Filenames
+
+When `dl=1` is specified, the Content-Disposition header triggers a browser download with filename format: `{slug}-qr.png`
+
+For example, a link with slug `abc123` will download as `abc123-qr.png`.
+
+## QR Code Generation
+
+The actual QR code encoding and rendering happens in internal/web/qr.go:64:
+
+```go
+qrc, err := qrcode.New(link.ShortURL)
+if err != nil {
+    http.Error(w, "failed to generate qr code", http.StatusInternalServerError)
+    return
+}
+
+var buf bytes.Buffer
+writer := standard.NewWithWriter(nopCloser{&buf}, opts...)
+if err := qrc.Save(writer); err != nil {
+    http.Error(w, "failed to render qr code", http.StatusInternalServerError)
+    return
+}
+```
+
+The QR code encodes the full short URL (e.g., `https://short.example.com/abc123`).
+
+## Examples
+
+### Default QR Code
+
+Generate a standard black square QR code:
+
+```
+GET /admin/links/123/qr
+```
+
+### Circular Blue QR Code
+
+Generate a circular QR code with blue foreground:
+
+```
+GET /admin/links/123/qr?shape=circle&fg=%230066CC
+```
+
+<Note>
+URL-encode the `#` in hex colors as `%23` when making API requests.
+</Note>
+
+### Download Red Square QR Code
+
+Generate a red QR code and trigger download:
+
+```
+GET /admin/links/123/qr?fg=%23FF0000&dl=1
+```
+
+### Using curl
+
+```bash
+# Download QR code to file
+curl -H "Authorization: Bearer YOUR_PASSWORD" \
+  "https://your-dubly.com/admin/links/123/qr?dl=1" \
+  -o qrcode.png
+
+# Custom colored QR code
+curl -H "Authorization: Bearer YOUR_PASSWORD" \
+  "https://your-dubly.com/admin/links/123/qr?shape=circle&fg=%2300FF00" \
+  -o green-qr.png
+```
+
+## Error Handling
+
+### Invalid Link ID
+
+If the link ID doesn't exist or is invalid:
+
+```
+HTTP/1.1 404 Not Found
+```
+
+### QR Generation Failure
+
+If QR code generation fails (extremely rare):
+
+```
+HTTP/1.1 500 Internal Server Error
+failed to generate qr code
+```
+
+## Technical Details
+
+### Buffer Implementation
+
+The QR code is rendered to an in-memory buffer to avoid filesystem I/O. A custom `nopCloser` wrapper is used in internal/web/qr.go:23:
+
+```go
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }
+```
+
+This allows the `bytes.Buffer` to satisfy the `io.WriteCloser` interface required by the QR library without actual close semantics.
+
+### Image Format
+
+All QR codes are generated as PNG images with:
+- Transparent background
+- Lossless compression
+- Optimal size for web display and printing
+
+<Tip>
+PNG format ensures QR codes look crisp at any size and can be placed on any background color.
+</Tip>
+
+## Best Practices
+
+### Color Selection
+
+- Use high contrast colors for reliable scanning (dark foreground, light/transparent background)
+- Test QR codes with your chosen colors on actual devices before printing
+- Avoid light colors like yellow or cyan for foreground
+
+### Size and Printing
+
+The default QR code size (QRWidth: 10, BorderWidth: 20) produces:
+- Web-friendly images around 300x300 pixels
+- Print-ready at 300 DPI for approximately 1 inch square
+
+For larger prints, scale the image up in your graphics software (QR codes scale perfectly as they're vector-like).
+
+### Embed in Marketing Materials
+
+```html
+<!-- Embed in HTML -->
+<img src="https://your-dubly.com/admin/links/123/qr?fg=%23333333" 
+     alt="QR Code" 
+     width="200" 
+     height="200">
+```
+
+### Dynamic QR Codes
+
+Since QR codes encode the short URL (not the destination), they remain valid even if you update the link's destination. This makes them true "dynamic QR codes" - update where the link points without reprinting.
+
+<Info>
+Unlike typical dynamic QR code services, Dubly doesn't charge extra for this feature. All QR codes are dynamic by design.
+</Info>

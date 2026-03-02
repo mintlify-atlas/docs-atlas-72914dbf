@@ -1,0 +1,287 @@
+---
+title: Installation
+description: Install Dubly on Ubuntu/Debian using the automated install script or manual setup
+---
+
+Dubly's install script handles everything needed to run a production URL shortener: Go, Caddy for HTTPS, systemd service, firewall configuration, and optional S3 backups.
+
+## System requirements
+
+- Ubuntu or Debian server
+- Root access (via sudo)
+- Domain pointed to your server via DNS A record
+
+## Quick install
+
+Run the install script on a fresh server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/scmmishra/dubly/main/scripts/install.sh | sudo bash
+```
+
+Or clone the repository first:
+
+```bash
+git clone https://github.com/scmmishra/dubly.git
+cd dubly
+sudo bash scripts/install.sh
+```
+
+The script will prompt you for:
+
+- App name (defaults to "Dubly")
+- Admin domain (e.g., `dubly.example.com`)
+- Redirect domains (comma-separated, can include admin domain)
+- API password (leave blank to auto-generate)
+- S3 backup configuration (optional but recommended)
+- MaxMind GeoIP license key (optional, for geographic analytics)
+
+## What the script installs
+
+<Steps>
+  <Step title="System dependencies">
+    Installs `git`, `curl`, and `ufw` (firewall) via apt.
+  </Step>
+  
+  <Step title="Go toolchain">
+    Downloads and installs Go 1.24.0 to `/usr/local/go`.
+    
+    ```bash
+    # Architecture detection and download
+    ARCH="$(dpkg --print-architecture)"
+    GO_TAR="go1.24.0.linux-${ARCH}.tar.gz"
+    curl -fsSL "https://go.dev/dl/$GO_TAR" -o "/tmp/$GO_TAR"
+    tar -C /usr/local -xzf "/tmp/$GO_TAR"
+    ```
+  </Step>
+  
+  <Step title="Litestream">
+    Installs Litestream 0.3.13 for continuous SQLite replication to S3 (if configured).
+    
+    ```bash
+    LITESTREAM_DEB="litestream-v0.3.13-linux-${ARCH}.deb"
+    curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v0.3.13/${LITESTREAM_DEB" -o "/tmp/${LITESTREAM_DEB}"
+    dpkg -i "/tmp/${LITESTREAM_DEB}"
+    ```
+  </Step>
+  
+  <Step title="Caddy web server">
+    Installs Caddy from the official apt repository for automatic HTTPS.
+    
+    ```bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update
+    apt-get install caddy
+    ```
+  </Step>
+  
+  <Step title="Dubly repository">
+    Clones the repository to `/opt/dubly` and builds the binary.
+    
+    ```bash
+    git clone https://github.com/scmmishra/dubly.git /opt/dubly
+    cd /opt/dubly
+    go build -o dubly ./cmd/server
+    ```
+  </Step>
+  
+  <Step title="Environment configuration">
+    Creates `/opt/dubly/.env` with your settings:
+    
+    ```bash
+    DUBLY_PASSWORD=your-password
+    DUBLY_DOMAINS=dubly.example.com,short.io
+    DUBLY_PORT=8080
+    DUBLY_DB_PATH=./dubly.db
+    DUBLY_APP_NAME=Dubly
+    DUBLY_GEOIP_PATH=./GeoLite2-City.mmdb
+    
+    # Optional S3 backups
+    LITESTREAM_S3_BUCKET=my-bucket
+    LITESTREAM_S3_ENDPOINT=https://s3.amazonaws.com
+    LITESTREAM_S3_REGION=us-east-1
+    LITESTREAM_ACCESS_KEY_ID=...
+    LITESTREAM_SECRET_ACCESS_KEY=...
+    ```
+    
+    File permissions are set to `600` for security.
+  </Step>
+  
+  <Step title="Systemd service">
+    Creates `/etc/systemd/system/dubly.service`:
+    
+    ```ini
+    [Unit]
+    Description=Dubly URL Shortener
+    After=network.target
+    
+    [Service]
+    Type=simple
+    WorkingDirectory=/opt/dubly
+    EnvironmentFile=/opt/dubly/.env
+    Environment="PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
+    ExecStart=/opt/dubly/dubly
+    Restart=on-failure
+    RestartSec=5
+    
+    [Install]
+    WantedBy=multi-user.target
+    ```
+    
+    When S3 backups are enabled, `ExecStart` points to `/opt/dubly/scripts/start.sh` instead, which wraps the binary with Litestream replication.
+  </Step>
+  
+  <Step title="Caddyfile">
+    Creates `/etc/caddy/Caddyfile` for automatic HTTPS:
+    
+    ```caddy
+    dubly.example.com short.io {
+        reverse_proxy localhost:8080
+        
+        header {
+            X-Frame-Options "DENY"
+            X-Content-Type-Options "nosniff"
+            Referrer-Policy "strict-origin-when-cross-origin"
+        }
+    }
+    ```
+  </Step>
+  
+  <Step title="Firewall rules">
+    Configures UFW to allow HTTP/HTTPS and block direct access to port 8080:
+    
+    ```bash
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw deny 8080/tcp
+    ufw allow OpenSSH
+    ufw enable
+    ```
+  </Step>
+  
+  <Step title="Service startup">
+    Enables and starts both services:
+    
+    ```bash
+    systemctl daemon-reload
+    systemctl enable dubly
+    systemctl restart dubly
+    systemctl enable caddy
+    systemctl restart caddy
+    ```
+  </Step>
+</Steps>
+
+## Post-installation
+
+Once complete, the script displays:
+
+- Admin URL (e.g., `https://dubly.example.com`)
+- API password (if auto-generated)
+- Useful systemd commands
+- Example API test command
+
+<Note>
+  If you auto-generated your password, **save it immediately**. It's stored in `/opt/dubly/.env` but won't be shown again in the terminal.
+</Note>
+
+## Updating Dubly
+
+To pull the latest changes and rebuild:
+
+```bash
+sudo /opt/dubly/scripts/install.sh --update
+```
+
+This runs:
+
+```bash
+git pull origin main
+go build -o dubly ./cmd/server
+systemctl restart dubly
+```
+
+## Adding domains
+
+To add a new domain to an existing installation:
+
+```bash
+sudo bash /opt/dubly/scripts/add-domain.sh newdomain.com
+```
+
+This updates `.env` and Caddyfile, then restarts both services. You still need to point a DNS A record to your server.
+
+## Manual installation
+
+If you prefer not to use the install script:
+
+<Steps>
+  <Step title="Install Go 1.24+">
+    Download from [go.dev/dl](https://go.dev/dl/)
+  </Step>
+  
+  <Step title="Clone repository">
+    ```bash
+    git clone https://github.com/scmmishra/dubly.git
+    cd dubly
+    ```
+  </Step>
+  
+  <Step title="Build binary">
+    ```bash
+    go build -o dubly ./cmd/server
+    ```
+  </Step>
+  
+  <Step title="Configure environment">
+    Create a `.env` file with required variables:
+    
+    ```bash
+    DUBLY_PASSWORD=your-secret-key
+    DUBLY_DOMAINS=short.io,go.example.com
+    ```
+    
+    See [Configuration](/configuration) for all available options.
+  </Step>
+  
+  <Step title="Set up reverse proxy">
+    Configure your web server (Caddy, nginx, etc.) to proxy to `localhost:8080` with HTTPS.
+  </Step>
+  
+  <Step title="Run Dubly">
+    ```bash
+    ./dubly
+    ```
+    
+    Or create a systemd service for production.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Check service status
+
+```bash
+systemctl status dubly
+systemctl status caddy
+```
+
+### View logs
+
+```bash
+journalctl -u dubly -f
+journalctl -u caddy -f
+```
+
+### Test without Caddy
+
+If Caddy is misconfigured, test Dubly directly:
+
+```bash
+curl http://localhost:8080/api/links -H "X-API-Key: your-password"
+```
+
+<Warning>
+  The install script is **idempotent** and safe to re-run. It skips already-installed dependencies and prompts before overwriting configuration files.
+</Warning>

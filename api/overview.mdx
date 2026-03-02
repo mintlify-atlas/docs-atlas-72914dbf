@@ -1,0 +1,110 @@
+---
+title: API Overview
+description: Introduction to the Dubly API
+---
+
+## Introduction
+
+The Dubly API provides programmatic access to create, manage, and monitor your short links. It's a RESTful API that uses standard HTTP methods and returns JSON responses.
+
+## Base URL
+
+API endpoints are available at:
+
+```
+http://your-domain.com/api
+```
+
+For example, if your Dubly instance is running at `https://short.io`, the base URL would be:
+
+```
+https://short.io/api
+```
+
+## API Design
+
+The API follows RESTful principles:
+
+- **Resource-based URLs** - Endpoints represent resources (e.g., `/api/links`)
+- **Standard HTTP methods** - GET (retrieve), POST (create), PATCH (update), DELETE (soft delete)
+- **JSON request/response** - All requests and responses use `application/json`
+- **Stateless** - Each request includes authentication via the `X-API-Key` header
+
+## Request Format
+
+All POST and PATCH requests must:
+
+- Include `Content-Type: application/json` header
+- Send valid JSON in the request body
+- Keep request bodies under 1 MB
+- Not include unknown fields (unknown fields will cause a 400 error)
+
+## Response Format
+
+All responses are JSON objects with appropriate HTTP status codes:
+
+### Success Responses
+
+- `200 OK` - GET and PATCH requests
+- `201 Created` - POST requests that create a new resource
+- `204 No Content` - DELETE requests (no response body)
+
+### Error Responses
+
+Errors return a JSON object with an `error` field:
+
+```json
+{
+  "error": "error message"
+}
+```
+
+## Error Handling
+
+The API uses standard HTTP status codes:
+
+| Status Code | Meaning |
+|-------------|----------|
+| `400 Bad Request` | Invalid JSON, missing required fields, or validation errors |
+| `401 Unauthorized` | Missing or invalid `X-API-Key` header |
+| `404 Not Found` | Resource not found |
+| `409 Conflict` | Slug already exists for the specified domain |
+| `500 Internal Server Error` | Server error |
+
+### Common Error Messages
+
+- `"invalid JSON"` - Request body is not valid JSON or exceeds 1 MB
+- `"unauthorized"` - Missing or incorrect API key
+- `"destination is required"` - Creating a link without a destination URL
+- `"domain is required"` - Creating a link without specifying a domain
+- `"domain not allowed"` - Domain is not in the `DUBLY_DOMAINS` list
+- `"slug already exists for this domain"` - The slug is already taken on that domain
+- `"not found"` - Link ID does not exist
+- `"invalid id"` - Link ID is not a valid integer
+- `"internal error"` - Database or server error
+
+## Rate Limiting
+
+Currently, Dubly does not implement rate limiting. However, best practices include:
+
+- Implementing client-side rate limiting
+- Batching requests when possible
+- Caching responses when appropriate
+
+## Pagination
+
+List endpoints support pagination via query parameters:
+
+- `limit` - Number of items to return (default: 25, max: 100)
+- `offset` - Number of items to skip (default: 0)
+
+The response includes pagination metadata:
+
+```json
+{
+  "links": [...],
+  "total": 150,
+  "limit": 25,
+  "offset": 0
+}
+```

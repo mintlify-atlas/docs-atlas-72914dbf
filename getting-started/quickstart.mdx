@@ -1,0 +1,288 @@
+---
+title: Quickstart
+description: Create your first shortened link and test the redirect in under 2 minutes
+---
+
+Get up and running with Dubly by creating your first short link.
+
+## Prerequisites
+
+- Dubly installed and running (see [Installation](/getting-started/installation))
+- Your API password from the install script or `.env` file
+- A domain pointed to your server
+
+## Create your first link
+
+<Steps>
+  <Step title="Verify Dubly is running">
+    Check that the API responds:
+    
+    ```bash
+    curl https://dubly.example.com/api/links \
+      -H "X-API-Key: your-secret-key"
+    ```
+    
+    You should see an empty array `[]` or a JSON list of links.
+  </Step>
+  
+  <Step title="Create a short link">
+    Use the API to create your first link:
+    
+    ```bash
+    curl -X POST https://dubly.example.com/api/links \
+      -H "X-API-Key: your-secret-key" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "domain": "dubly.example.com",
+        "destination": "https://github.com/scmmishra/dubly",
+        "title": "Dubly on GitHub",
+        "slug": "gh"
+      }'
+    ```
+    
+    Response:
+    
+    ```json
+    {
+      "id": 1,
+      "domain": "dubly.example.com",
+      "slug": "gh",
+      "destination": "https://github.com/scmmishra/dubly",
+      "title": "Dubly on GitHub",
+      "tags": "",
+      "is_active": true,
+      "created_at": "2026-03-02T10:30:00Z",
+      "updated_at": "2026-03-02T10:30:00Z"
+    }
+    ```
+    
+    <Note>
+      The `slug` field is optional. If omitted, Dubly generates a random 6-character slug using crypto/rand.
+    </Note>
+  </Step>
+  
+  <Step title="Test the redirect">
+    Visit your short link in a browser or curl it:
+    
+    ```bash
+    curl -I https://dubly.example.com/gh
+    ```
+    
+    You should see a `302 Found` redirect to your destination:
+    
+    ```http
+    HTTP/2 302
+    location: https://github.com/scmmishra/dubly
+    ```
+  </Step>
+  
+  <Step title="View analytics">
+    Open the admin UI to see click analytics:
+    
+    ```
+    https://dubly.example.com/admin/links
+    ```
+    
+    Click on your link to see detailed analytics including:
+    - Click count over time
+    - Geographic distribution (if GeoIP is configured)
+    - Browser and device breakdown
+    - Referrer sources
+  </Step>
+</Steps>
+
+## Using the admin UI
+
+Dubly includes a built-in admin interface for managing links without the API.
+
+<Steps>
+  <Step title="Access the admin UI">
+    Navigate to `https://your-domain.com/admin/login`
+    
+    Enter your API password to log in.
+  </Step>
+  
+  <Step title="Create a link via UI">
+    Click "New Link" and fill in:
+    - Domain (select from configured domains)
+    - Destination URL
+    - Custom slug (optional)
+    - Title and tags (optional)
+    
+    Click "Create" to save.
+  </Step>
+  
+  <Step title="Manage existing links">
+    From the dashboard:
+    - Edit link destinations or slugs
+    - View click analytics
+    - Deactivate links (returns 410 Gone instead of redirecting)
+    - Delete links (soft delete, preserves analytics)
+  </Step>
+</Steps>
+
+## API examples
+
+### Auto-generated slug
+
+Omit the `slug` field to generate a random 6-character identifier:
+
+```bash
+curl -X POST https://dubly.example.com/api/links \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "short.io",
+    "destination": "https://example.com/some/long/url",
+    "title": "Example Link",
+    "tags": "demo,test"
+  }'
+```
+
+Response might include `"slug": "a7k3mn"`.
+
+### Multiple domains
+
+If you configured multiple domains during installation, you can create links on any of them:
+
+```bash
+# Link on primary domain
+curl -X POST https://dubly.example.com/api/links \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "dubly.example.com",
+    "destination": "https://example.com/admin",
+    "slug": "admin"
+  }'
+
+# Link on secondary domain
+curl -X POST https://dubly.example.com/api/links \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "short.io",
+    "destination": "https://example.com/marketing",
+    "slug": "promo"
+  }'
+```
+
+### List links
+
+Retrieve all links with pagination and search:
+
+```bash
+# First 25 links
+curl "https://dubly.example.com/api/links?limit=25&offset=0" \
+  -H "X-API-Key: your-secret-key"
+
+# Search by title, destination, or slug
+curl "https://dubly.example.com/api/links?search=github" \
+  -H "X-API-Key: your-secret-key"
+```
+
+### Update a link
+
+Change the destination or other properties:
+
+```bash
+curl -X PATCH https://dubly.example.com/api/links/1 \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"destination": "https://example.com/new-url"}'
+```
+
+<Note>
+  Updating a link automatically invalidates the redirect cache. The new destination takes effect immediately.
+</Note>
+
+### Deactivate a link
+
+Deactivated links return `410 Gone` instead of redirecting:
+
+```bash
+curl -X PATCH https://dubly.example.com/api/links/1 \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active": false}'
+```
+
+Test it:
+
+```bash
+curl -I https://dubly.example.com/gh
+# HTTP/2 410
+```
+
+### Delete a link
+
+Dubly uses soft deletes, so analytics are preserved:
+
+```bash
+curl -X DELETE https://dubly.example.com/api/links/1 \
+  -H "X-API-Key: your-secret-key"
+```
+
+Deleted links behave the same as deactivated links (410 Gone).
+
+## How redirects work
+
+Dubly treats any request that doesn't match `/api/*` or `/admin/*` as a potential redirect.
+
+<Steps>
+  <Step title="Domain and slug extraction">
+    The domain comes from the `Host` header, the slug from the request path:
+    
+    ```
+    https://short.io/custom-slug
+    Host: short.io
+    Slug: custom-slug
+    ```
+  </Step>
+  
+  <Step title="Cache lookup">
+    Dubly checks an in-memory LRU cache (default 10,000 entries) for the domain/slug pair.
+  </Step>
+  
+  <Step title="Database fallback">
+    If not cached, it queries SQLite:
+    
+    ```sql
+    SELECT id, destination, is_active 
+    FROM links 
+    WHERE domain = ? AND slug = ? AND is_active = 1
+    ```
+  </Step>
+  
+  <Step title="Response">
+    - **Active link**: 302 redirect to destination
+    - **Inactive/deleted**: 410 Gone
+    - **Not found**: 404 Not Found
+  </Step>
+  
+  <Step title="Analytics collection">
+    The redirect handler pushes click events to a buffered collector, which records:
+    - Timestamp, IP, referer
+    - User-Agent (parsed for browser/OS/device)
+    - Geographic data (if GeoIP configured)
+    
+    Bots and datacenter IPs are filtered automatically.
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Explore all environment variables and tuning options
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Complete API documentation with all endpoints
+  </Card>
+  <Card title="Analytics" icon="chart-line" href="/features/analytics">
+    Learn how click tracking and bot filtering works
+  </Card>
+  <Card title="Custom Domains" icon="globe" href="/features/custom-domains">
+    Set up multiple short domains for different use cases
+  </Card>
+</CardGroup>

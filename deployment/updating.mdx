@@ -1,0 +1,379 @@
+---
+title: Updating Dubly
+description: Keep your Dubly installation up to date with the latest features and fixes
+---
+
+Updating Dubly is a simple, safe process using the same install script with the `--update` flag.
+
+## Quick Update
+
+Run the update command from any directory:
+
+```bash
+sudo /opt/dubly/scripts/install.sh --update
+```
+
+This will:
+1. Pull the latest code from the main branch
+2. Rebuild the binary
+3. Restart the Dubly service
+
+<Info>
+The update process preserves your `.env` configuration and database. No data is lost during updates.
+</Info>
+
+## What Happens During Update
+
+<Steps>
+  <Step title="Pull Latest Changes">
+    The script runs `git pull origin main` in `/opt/dubly` to fetch the latest code.
+
+    ```bash
+    git -C /opt/dubly pull origin main
+    ```
+  </Step>
+
+  <Step title="Rebuild Binary">
+    The Go binary is rebuilt with the new code:
+
+    ```bash
+    cd /opt/dubly
+    /usr/local/go/bin/go build -o dubly ./cmd/server
+    ```
+
+    The old binary is replaced with the new one.
+  </Step>
+
+  <Step title="Restart Service">
+    The systemd service is restarted to load the new binary:
+
+    ```bash
+    systemctl restart dubly
+    ```
+
+    Downtime is typically less than 1 second.
+  </Step>
+
+  <Step title="Verify Status">
+    The script displays the service status:
+
+    ```bash
+    systemctl --no-pager status dubly
+    ```
+  </Step>
+</Steps>
+
+## Update Process in Detail
+
+### Configuration Preservation
+
+The update process never touches:
+- `/opt/dubly/.env` (your configuration)
+- `/opt/dubly/dubly.db` (your database)
+- `/opt/dubly/GeoLite2-City.mmdb` (GeoIP database)
+- `/etc/systemd/system/dubly.service` (systemd unit)
+- `/etc/caddy/Caddyfile` (Caddy configuration)
+
+Only the binary and source code are updated.
+
+### Zero-Configuration Updates
+
+The update flag skips all interactive prompts. It assumes:
+- You have an existing installation at `/opt/dubly`
+- Your `.env` file is correct
+- Services are already configured
+
+If no installation exists, the script exits with an error:
+
+```
+[ERROR] No Dubly installation found at /opt/dubly.
+[ERROR] Run without --update for a fresh install.
+```
+
+## Safe Update Procedures
+
+### Pre-Update Checklist
+
+Before updating:
+
+<Steps>
+  <Step title="Check Current Status">
+    Verify Dubly is running normally:
+
+    ```bash
+    systemctl status dubly
+    ```
+  </Step>
+
+  <Step title="Review Changelog">
+    Check the [GitHub releases](https://github.com/scmmishra/dubly/releases) for breaking changes or migration steps.
+  </Step>
+
+  <Step title="Backup Database (Optional)">
+    If you have S3 backups configured, they're automatic. For extra safety:
+
+    ```bash
+    sudo cp /opt/dubly/dubly.db /opt/dubly/dubly.db.backup-$(date +%Y%m%d)
+    ```
+  </Step>
+</Steps>
+
+### Performing the Update
+
+```bash
+sudo /opt/dubly/scripts/install.sh --update
+```
+
+Expected output:
+
+```
+=== Updating Dubly ===
+
+[INFO]  Pulling latest changes...
+Already up to date.
+[INFO]  Rebuilding binary...
+[INFO]  Restarting service...
+
+[OK]    Dubly updated successfully!
+● dubly.service - Dubly URL Shortener
+     Loaded: loaded (/etc/systemd/system/dubly.service; enabled)
+     Active: active (running) since Mon 2026-03-02 10:30:15 UTC; 1s ago
+   Main PID: 12345 (dubly)
+      Tasks: 8
+     Memory: 12.4M
+```
+
+### Post-Update Verification
+
+<Steps>
+  <Step title="Check Service Status">
+    Confirm Dubly is running:
+
+    ```bash
+    systemctl status dubly
+    ```
+
+    Status should show `active (running)`.
+  </Step>
+
+  <Step title="Test API">
+    Verify the API responds:
+
+    ```bash
+    curl -s https://dubly.example.com/api/links \
+      -H 'X-API-Key: your-password'
+    ```
+  </Step>
+
+  <Step title="Check Admin UI">
+    Access the admin interface at `https://dubly.example.com` and verify it loads.
+  </Step>
+
+  <Step title="Monitor Logs">
+    Watch for any errors:
+
+    ```bash
+    journalctl -u dubly -f
+    ```
+  </Step>
+</Steps>
+
+## Rollback Procedure
+
+If the update causes issues, you can roll back:
+
+<Steps>
+  <Step title="Stop Service">
+    ```bash
+    sudo systemctl stop dubly
+    ```
+  </Step>
+
+  <Step title="Revert to Previous Version">
+    ```bash
+    cd /opt/dubly
+    sudo git log --oneline -n 10  # Find the previous commit
+    sudo git checkout <previous-commit-hash>
+    sudo /usr/local/go/bin/go build -o dubly ./cmd/server
+    ```
+  </Step>
+
+  <Step title="Restart Service">
+    ```bash
+    sudo systemctl start dubly
+    ```
+  </Step>
+
+  <Step title="Verify">
+    ```bash
+    systemctl status dubly
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Database schema changes may prevent rollback. Check release notes for migration warnings before updating.
+</Warning>
+
+## Update Frequency Recommendations
+
+- **Security updates**: Apply immediately
+- **Feature releases**: Update within 1-2 weeks after testing
+- **Patch releases**: Update monthly or as needed
+
+## Automated Updates
+
+You can automate updates with a cron job (not recommended for production):
+
+```bash
+# Run updates weekly on Sunday at 2 AM
+0 2 * * 0 /opt/dubly/scripts/install.sh --update >> /var/log/dubly-update.log 2>&1
+```
+
+<Warning>
+Automated updates can introduce breaking changes without notice. Only use for non-critical deployments.
+</Warning>
+
+## Updating Dependencies
+
+### Updating Go
+
+The install script installs Go v1.24.0. To update Go:
+
+<Steps>
+  <Step title="Download New Version">
+    ```bash
+    GO_VERSION="1.24.1"  # Change to desired version
+    ARCH="amd64"  # or arm64
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz
+    ```
+  </Step>
+
+  <Step title="Replace Installation">
+    ```bash
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm /tmp/go.tar.gz
+    ```
+  </Step>
+
+  <Step title="Rebuild Dubly">
+    ```bash
+    cd /opt/dubly
+    sudo /usr/local/go/bin/go build -o dubly ./cmd/server
+    sudo systemctl restart dubly
+    ```
+  </Step>
+</Steps>
+
+### Updating Litestream
+
+To update Litestream:
+
+```bash
+LITESTREAM_VERSION="0.3.14"  # Check latest at github.com/benbjohnson/litestream
+ARCH="amd64"  # or arm64
+curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-${ARCH}.deb" -o /tmp/litestream.deb
+sudo dpkg -i /tmp/litestream.deb
+rm /tmp/litestream.deb
+sudo systemctl restart dubly
+```
+
+### Updating Caddy
+
+Caddy updates through apt:
+
+```bash
+sudo apt update
+sudo apt upgrade caddy
+sudo systemctl restart caddy
+```
+
+## Troubleshooting Updates
+
+### Update Script Fails
+
+If `/opt/dubly/scripts/install.sh --update` fails:
+
+1. Check Git status for conflicts:
+   ```bash
+   cd /opt/dubly
+   sudo git status
+   ```
+
+2. If files were modified locally, stash changes:
+   ```bash
+   sudo git stash
+   sudo /opt/dubly/scripts/install.sh --update
+   ```
+
+3. If the repository is corrupted, re-clone:
+   ```bash
+   sudo systemctl stop dubly
+   sudo mv /opt/dubly /opt/dubly.backup
+   sudo git clone https://github.com/scmmishra/dubly.git /opt/dubly
+   sudo cp /opt/dubly.backup/.env /opt/dubly/
+   sudo cp /opt/dubly.backup/dubly.db /opt/dubly/
+   sudo /opt/dubly/scripts/install.sh --update
+   ```
+
+### Service Won't Start After Update
+
+Check logs for errors:
+
+```bash
+journalctl -u dubly -n 50
+```
+
+Common issues:
+- Binary compilation failed (check Go version)
+- Environment variable changes (compare `.env` to new requirements)
+- Database migration needed (check release notes)
+
+### Binary Won't Compile
+
+Ensure Go is installed and accessible:
+
+```bash
+/usr/local/go/bin/go version
+```
+
+If Go is missing, re-run the full install script:
+
+```bash
+sudo /opt/dubly/scripts/install.sh
+```
+
+## Version Information
+
+To check your current Dubly version:
+
+```bash
+cd /opt/dubly
+git log -1 --oneline
+```
+
+Or check the binary build time:
+
+```bash
+ls -lh /opt/dubly/dubly
+```
+
+## Release Channels
+
+Dubly follows a single `main` branch for releases:
+
+- All updates come from `github.com/scmmishra/dubly` main branch
+- Tagged releases represent stable versions
+- The update script always pulls from `main`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configure Backups" icon="database" href="/deployment/backups">
+    Ensure your data is protected before updates
+  </Card>
+  <Card title="Production Setup" icon="server" href="/deployment/production-setup">
+    Learn about production deployment and monitoring
+  </Card>
+</CardGroup>

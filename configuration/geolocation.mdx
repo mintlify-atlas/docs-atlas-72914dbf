@@ -1,0 +1,181 @@
+---
+title: Geolocation
+description: Configure IP geolocation for click analytics using MaxMind GeoLite2
+---
+
+Dubly can enrich click analytics with geographic data (country, city, region, coordinates) using MaxMind's GeoLite2 database.
+
+## Configuration
+
+Geolocation is controlled by a single environment variable:
+
+```bash
+export DUBLY_GEOIP_PATH="/var/lib/dubly/GeoLite2-City.mmdb"
+```
+
+**Default:** Empty string (geolocation disabled)
+
+When `DUBLY_GEOIP_PATH` is empty or not set, Dubly operates in no-op mode—all geographic fields in analytics are left empty, but clicks are still recorded with all other data.
+
+## Obtaining GeoLite2 Database
+
+1. Sign up for a free MaxMind GeoLite2 account: https://www.maxmind.com/en/geolite2/signup
+2. Download the **GeoLite2 City** database in MMDB format
+3. Place the `.mmdb` file on your server
+4. Set `DUBLY_GEOIP_PATH` to the file path
+5. Restart Dubly
+
+<Note>
+  MaxMind updates the GeoLite2 database weekly. Consider setting up a cron job to download updates automatically.
+</Note>
+
+## Geographic Data Collected
+
+When geolocation is enabled, each click is enriched with:
+
+<ParamField path="country" type="string">
+  ISO 3166-1 alpha-2 country code (e.g., `US`, `GB`, `JP`)
+</ParamField>
+
+<ParamField path="city" type="string">
+  City name in English (e.g., `San Francisco`, `London`, `Tokyo`)
+</ParamField>
+
+<ParamField path="region" type="string">
+  Subdivision name, typically state/province (e.g., `California`, `England`, `Tokyo`)
+</ParamField>
+
+<ParamField path="latitude" type="float">
+  Approximate latitude coordinate
+</ParamField>
+
+<ParamField path="longitude" type="float">
+  Approximate longitude coordinate
+</ParamField>
+
+**Example output:**
+```json
+{
+  "country": "US",
+  "city": "San Francisco",
+  "region": "California",
+  "latitude": 37.7749,
+  "longitude": -122.4194
+}
+```
+
+## Graceful Degradation
+
+Dubly is designed to work seamlessly whether geolocation is enabled or not:
+
+### When Disabled (No Path Set)
+
+```go
+func Open(path string) (*Reader, error) {
+    if path == "" {
+        return &Reader{}, nil  // Returns no-op reader
+    }
+    // ...
+}
+```
+
+If `DUBLY_GEOIP_PATH` is empty, the geo reader initializes as a no-op instance. All lookups return empty results without errors.
+
+### When Lookup Fails
+
+```go
+func (r *Reader) Lookup(ipStr string) Result {
+    if r == nil || r.db == nil {
+        return Result{}  // Empty result
+    }
+    // ...
+    if err := r.db.Lookup(ip, &record); err != nil {
+        return Result{}  // Empty result, no error propagation
+    }
+}
+```
+
+Failed lookups (invalid IP, IP not in database, etc.) silently return empty results. Analytics continue to be recorded—just without geographic data.
+
+### Database Schema Impact
+
+Geographic fields in the `clicks` table allow NULL values:
+
+```sql
+country         TEXT,
+city            TEXT,
+region          TEXT,
+latitude        REAL,
+longitude       REAL,
+```
+
+Clicks without geolocation will have these fields set to NULL or empty strings.
+
+## Privacy Considerations
+
+- IP addresses are stored in the database for geolocation lookups
+- Geographic coordinates are approximate (city-level, not precise location)
+- Consider your jurisdiction's privacy regulations (GDPR, CCPA, etc.)
+- GeoLite2 data is less accurate than commercial MaxMind products
+
+<Warning>
+  If you process personal data, ensure you have appropriate legal basis and privacy policies in place. Storing IP addresses may require user consent in some jurisdictions.
+</Warning>
+
+## Performance Impact
+
+Geo lookups add minimal overhead:
+
+- **Lookup time:** < 1ms (in-memory database)
+- **Memory usage:** ~50-70 MB (GeoLite2-City.mmdb loaded into RAM)
+- **Impact on redirects:** None (lookups happen asynchronously in analytics buffer)
+
+The MaxMind database is loaded into memory on startup and remains resident. Lookups are performed during click buffering, not during redirect processing, so they don't slow down URL redirects.
+
+## Troubleshooting
+
+### Database Not Loading
+
+If Dubly fails to start with a geo path set:
+
+```bash
+failed to open geo reader: error opening database file
+```
+
+**Solutions:**
+- Verify the file path is correct and absolute
+- Check file permissions (Dubly process must have read access)
+- Ensure the file is the correct MMDB format (not CSV or other format)
+- Try setting `DUBLY_GEOIP_PATH=""` to disable geolocation temporarily
+
+### Empty Geographic Data
+
+If clicks show no geographic information:
+
+1. **Verify path is set:** Check `DUBLY_GEOIP_PATH` environment variable
+2. **Check database file:** Ensure the .mmdb file exists and is readable
+3. **Restart required:** Changes to `DUBLY_GEOIP_PATH` require a restart
+4. **IP validation:** Localhost IPs (127.0.0.1, ::1) won't have geo data
+5. **Database coverage:** Some IPs may not be in the GeoLite2 database
+
+## Updating the Database
+
+To update the GeoLite2 database:
+
+1. Download the latest version from MaxMind
+2. Replace the existing .mmdb file
+3. Restart Dubly to load the new database
+
+**Automation example:**
+
+```bash
+#!/bin/bash
+# Download and update GeoLite2 database
+wget -O /tmp/GeoLite2-City.tar.gz "https://download.maxmind.com/..."
+tar -xzf /tmp/GeoLite2-City.tar.gz -C /var/lib/dubly/
+systemctl restart dubly
+```
+
+<Note>
+  The install script can configure automatic GeoLite2 updates if you provide your MaxMind license key during setup.
+</Note>

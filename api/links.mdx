@@ -1,0 +1,508 @@
+---
+title: Links API
+description: Create and manage short links
+---
+
+## Create Link
+
+Create a new short link.
+
+```http
+POST /api/links
+```
+
+### Request Body
+
+<ParamField path="destination" type="string" required>
+  The target URL where the short link will redirect. Must be a complete URL.
+</ParamField>
+
+<ParamField path="domain" type="string" required>
+  The domain for the short link. Must be in the `DUBLY_DOMAINS` environment variable.
+</ParamField>
+
+<ParamField path="slug" type="string">
+  Custom slug for the short link. If omitted, a random 6-character slug is generated. Must be unique for the specified domain.
+</ParamField>
+
+<ParamField path="title" type="string">
+  Optional title or description for the link.
+</ParamField>
+
+<ParamField path="tags" type="string">
+  Optional tags for organizing links (comma-separated or any format you prefer).
+</ParamField>
+
+<ParamField path="notes" type="string">
+  Optional private notes about the link.
+</ParamField>
+
+### Response (201 Created)
+
+<ResponseField name="id" type="integer">
+  Unique identifier for the link.
+</ResponseField>
+
+<ResponseField name="slug" type="string">
+  The slug portion of the short link.
+</ResponseField>
+
+<ResponseField name="domain" type="string">
+  The domain for the short link.
+</ResponseField>
+
+<ResponseField name="short_url" type="string">
+  The complete short URL (https://domain/slug).
+</ResponseField>
+
+<ResponseField name="destination" type="string">
+  The target URL.
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  The link title.
+</ResponseField>
+
+<ResponseField name="tags" type="string">
+  The link tags.
+</ResponseField>
+
+<ResponseField name="notes" type="string">
+  Private notes.
+</ResponseField>
+
+<ResponseField name="is_active" type="boolean">
+  Whether the link is active. New links are always `true`.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  ISO 8601 timestamp when the link was created.
+</ResponseField>
+
+<ResponseField name="updated_at" type="string">
+  ISO 8601 timestamp when the link was last updated.
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://localhost:8080/api/links \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "short.io",
+    "destination": "https://example.com/some/long/url",
+    "title": "Example Link",
+    "tags": "demo",
+    "slug": "custom-slug"
+  }'
+```
+
+```json Response
+{
+  "id": 1,
+  "slug": "custom-slug",
+  "domain": "short.io",
+  "short_url": "https://short.io/custom-slug",
+  "destination": "https://example.com/some/long/url",
+  "title": "Example Link",
+  "tags": "demo",
+  "notes": "",
+  "is_active": true,
+  "created_at": "2026-03-02T10:30:00Z",
+  "updated_at": "2026-03-02T10:30:00Z"
+}
+```
+</CodeGroup>
+
+### Auto-Generated Slug
+
+Omit the `slug` field to generate a random 6-character slug:
+
+```bash
+curl -X POST http://localhost:8080/api/links \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "short.io",
+    "destination": "https://example.com/article"
+  }'
+```
+
+Response:
+```json
+{
+  "id": 2,
+  "slug": "a3K9mX",
+  "domain": "short.io",
+  "short_url": "https://short.io/a3K9mX",
+  "destination": "https://example.com/article",
+  "title": "",
+  "tags": "",
+  "notes": "",
+  "is_active": true,
+  "created_at": "2026-03-02T10:35:00Z",
+  "updated_at": "2026-03-02T10:35:00Z"
+}
+```
+
+### Errors
+
+**400 Bad Request** - Missing required field:
+```json
+{"error": "destination is required"}
+```
+
+**400 Bad Request** - Domain not allowed:
+```json
+{"error": "domain not allowed"}
+```
+
+**409 Conflict** - Slug already exists:
+```json
+{"error": "slug already exists for this domain"}
+```
+
+---
+
+## List Links
+
+Retrieve a paginated list of links with optional search.
+
+```http
+GET /api/links
+```
+
+### Query Parameters
+
+<ParamField query="limit" type="integer" default="25">
+  Number of links to return. Maximum: 100.
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Number of links to skip for pagination.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Search term to filter links by slug, destination, title, or tags.
+</ParamField>
+
+### Response (200 OK)
+
+<ResponseField name="links" type="array">
+  Array of link objects (same structure as Create Link response).
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of links matching the search criteria.
+</ResponseField>
+
+<ResponseField name="limit" type="integer">
+  The limit used for this request.
+</ResponseField>
+
+<ResponseField name="offset" type="integer">
+  The offset used for this request.
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:8080/api/links?limit=25&offset=0&search=example" \
+  -H "X-API-Key: your-secret-key"
+```
+
+```json Response
+{
+  "links": [
+    {
+      "id": 1,
+      "slug": "custom-slug",
+      "domain": "short.io",
+      "short_url": "https://short.io/custom-slug",
+      "destination": "https://example.com/some/long/url",
+      "title": "Example Link",
+      "tags": "demo",
+      "notes": "",
+      "is_active": true,
+      "created_at": "2026-03-02T10:30:00Z",
+      "updated_at": "2026-03-02T10:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 25,
+  "offset": 0
+}
+```
+</CodeGroup>
+
+### Pagination Example
+
+Get the second page of results:
+
+```bash
+curl "http://localhost:8080/api/links?limit=25&offset=25" \
+  -H "X-API-Key: your-secret-key"
+```
+
+### Search Example
+
+Search for links containing "github":
+
+```bash
+curl "http://localhost:8080/api/links?search=github" \
+  -H "X-API-Key: your-secret-key"
+```
+
+The search term is matched against:
+- Slug
+- Destination URL
+- Title
+- Tags
+
+---
+
+## Get Link
+
+Retrieve a specific link by ID.
+
+```http
+GET /api/links/{id}
+```
+
+### Path Parameters
+
+<ParamField path="id" type="integer" required>
+  The unique identifier of the link.
+</ParamField>
+
+### Response (200 OK)
+
+Returns a single link object (same structure as Create Link response).
+
+### Example
+
+<CodeGroup>
+```bash cURL
+curl http://localhost:8080/api/links/1 \
+  -H "X-API-Key: your-secret-key"
+```
+
+```json Response
+{
+  "id": 1,
+  "slug": "custom-slug",
+  "domain": "short.io",
+  "short_url": "https://short.io/custom-slug",
+  "destination": "https://example.com/some/long/url",
+  "title": "Example Link",
+  "tags": "demo",
+  "notes": "",
+  "is_active": true,
+  "created_at": "2026-03-02T10:30:00Z",
+  "updated_at": "2026-03-02T10:30:00Z"
+}
+```
+</CodeGroup>
+
+### Errors
+
+**400 Bad Request** - Invalid ID:
+```json
+{"error": "invalid id"}
+```
+
+**404 Not Found** - Link not found:
+```json
+{"error": "not found"}
+```
+
+---
+
+## Update Link
+
+Update an existing link. Only provided fields are updated.
+
+```http
+PATCH /api/links/{id}
+```
+
+### Path Parameters
+
+<ParamField path="id" type="integer" required>
+  The unique identifier of the link.
+</ParamField>
+
+### Request Body
+
+All fields are optional. Only include fields you want to update.
+
+<ParamField path="slug" type="string">
+  New slug for the link.
+</ParamField>
+
+<ParamField path="domain" type="string">
+  New domain for the link. Must be in `DUBLY_DOMAINS`.
+</ParamField>
+
+<ParamField path="destination" type="string">
+  New destination URL.
+</ParamField>
+
+<ParamField path="title" type="string" nullable>
+  New title. Pass `null` to clear.
+</ParamField>
+
+<ParamField path="tags" type="string" nullable>
+  New tags. Pass `null` to clear.
+</ParamField>
+
+<ParamField path="notes" type="string" nullable>
+  New notes. Pass `null` to clear.
+</ParamField>
+
+### Response (200 OK)
+
+Returns the updated link object.
+
+### Example
+
+<CodeGroup>
+```bash cURL
+curl -X PATCH http://localhost:8080/api/links/1 \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"destination": "https://example.com/new-url"}'
+```
+
+```json Response
+{
+  "id": 1,
+  "slug": "custom-slug",
+  "domain": "short.io",
+  "short_url": "https://short.io/custom-slug",
+  "destination": "https://example.com/new-url",
+  "title": "Example Link",
+  "tags": "demo",
+  "notes": "",
+  "is_active": true,
+  "created_at": "2026-03-02T10:30:00Z",
+  "updated_at": "2026-03-02T10:40:00Z"
+}
+```
+</CodeGroup>
+
+### Update Multiple Fields
+
+```bash
+curl -X PATCH http://localhost:8080/api/links/1 \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destination": "https://example.com/updated",
+    "title": "Updated Title",
+    "tags": "updated,demo"
+  }'
+```
+
+### Clear a Field
+
+To clear optional fields, pass `null`:
+
+```bash
+curl -X PATCH http://localhost:8080/api/links/1 \
+  -H "X-API-Key: your-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"title": null, "notes": null}'
+```
+
+### Cache Invalidation
+
+When you update a link's slug or domain, the old cache entry is automatically invalidated to ensure redirects use the new configuration immediately.
+
+### Errors
+
+**400 Bad Request** - Invalid ID:
+```json
+{"error": "invalid id"}
+```
+
+**400 Bad Request** - Domain not allowed:
+```json
+{"error": "domain not allowed"}
+```
+
+**404 Not Found** - Link not found:
+```json
+{"error": "not found"}
+```
+
+**409 Conflict** - Slug already exists:
+```json
+{"error": "slug already exists for this domain"}
+```
+
+---
+
+## Delete Link
+
+Soft delete a link. The link is marked as inactive but not removed from the database.
+
+```http
+DELETE /api/links/{id}
+```
+
+### Path Parameters
+
+<ParamField path="id" type="integer" required>
+  The unique identifier of the link.
+</ParamField>
+
+### Response (204 No Content)
+
+No response body is returned on success.
+
+### Example
+
+<CodeGroup>
+```bash cURL
+curl -X DELETE http://localhost:8080/api/links/1 \
+  -H "X-API-Key: your-secret-key"
+```
+
+```text Response
+HTTP/1.1 204 No Content
+```
+</CodeGroup>
+
+### Soft Delete Behavior
+
+Deleting a link:
+
+1. Sets `is_active` to `false`
+2. Updates the `updated_at` timestamp
+3. Invalidates the cache entry
+4. Keeps all data and analytics
+
+The link is **not** removed from the database. Accessing the short URL will return `410 Gone` (see [Redirects](/api/redirects)).
+
+### Why Soft Delete?
+
+- **Preserve analytics** - Historical click data remains available
+- **Prevent reuse** - The slug remains reserved for that domain
+- **Audit trail** - You can see when links were deactivated
+- **Reversible** - Links can be reactivated by updating `is_active` directly in the database if needed
+
+### Errors
+
+**400 Bad Request** - Invalid ID:
+```json
+{"error": "invalid id"}
+```
+
+**404 Not Found** - Link not found:
+```json
+{"error": "not found"}
+```

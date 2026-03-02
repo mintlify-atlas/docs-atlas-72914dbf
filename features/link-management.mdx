@@ -1,0 +1,244 @@
+---
+title: Link Management
+description: Create, update, and manage short links with custom slugs and metadata
+---
+
+## Overview
+
+Dubly provides comprehensive link management through both API endpoints and web interface. Each link consists of a slug (short identifier), destination URL, domain, and optional metadata like title, tags, and notes.
+
+## Creating Links
+
+### Auto-generated Slugs
+
+When you create a link without specifying a slug, Dubly automatically generates a 6-character Base62 identifier using cryptographically secure random generation:
+
+```go
+const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+func Generate() (string, error) {
+    b := make([]byte, 6)
+    for i := range b {
+        n, err := rand.Int(rand.Reader, maxIdx)
+        if err != nil {
+            return "", err
+        }
+        b[i] = charset[n.Int64()]
+    }
+    return string(b), nil
+}
+```
+
+The system performs collision detection by retrying up to 10 times if a generated slug already exists for the specified domain:
+
+```go
+for range 10 {
+    candidate, err := slug.Generate()
+    exists, err := models.SlugExists(h.DB, candidate, req.Domain)
+    if !exists {
+        req.Slug = candidate
+        break
+    }
+}
+```
+
+<Note>
+Slug uniqueness is enforced per-domain. The same slug can exist on different domains.
+</Note>
+
+### Custom Slugs
+
+You can specify your own slug when creating a link. Custom slugs:
+
+- Must be unique within the domain
+- Are case-sensitive
+- Can contain letters, numbers, hyphens, and underscores
+- Cannot conflict with existing slugs, even soft-deleted ones
+
+### API Endpoint
+
+```bash
+POST /api/links
+Content-Type: application/json
+Authorization: Bearer YOUR_PASSWORD
+
+{
+  "destination": "https://example.com/very/long/url",
+  "domain": "short.example.com",
+  "slug": "custom-slug",  // Optional - auto-generated if omitted
+  "title": "Example Link",
+  "tags": "documentation, example",
+  "notes": "Internal notes about this link"
+}
+```
+
+## Link Metadata
+
+Each link supports three metadata fields:
+
+- **Title**: Descriptive name for the link (displayed in admin interface)
+- **Tags**: Comma-separated tags for organization and filtering
+- **Notes**: Private notes visible only in admin interface
+
+All metadata fields are optional and searchable through the list endpoint.
+
+## Updating Links
+
+Links can be updated after creation. The update endpoint supports partial updates - only fields you provide will be modified:
+
+```bash
+PUT /api/links/{id}
+Content-Type: application/json
+Authorization: Bearer YOUR_PASSWORD
+
+{
+  "destination": "https://new-destination.com",
+  "title": "Updated title"
+  // Other fields remain unchanged
+}
+```
+
+### Cache Invalidation
+
+When a link is updated, Dubly automatically invalidates the cache entry using the **old** slug and domain combination before applying changes:
+
+```go
+// Capture old key before mutation for cache invalidation
+oldDomain, oldSlug := existing.Domain, existing.Slug
+
+// Apply updates
+if req.Slug != "" {
+    existing.Slug = req.Slug
+}
+if req.Domain != "" {
+    existing.Domain = req.Domain
+}
+
+// Invalidate old cache entry (using pre-mutation key)
+h.Cache.Invalidate(oldDomain, oldSlug)
+```
+
+<Info>
+Changing the slug or domain creates a new short URL. The old URL will return 404 after the update.
+</Info>
+
+## Deleting Links
+
+Dubly uses soft-deletion to preserve analytics data and prevent accidental data loss.
+
+### Soft-Delete Behavior
+
+When you delete a link:
+
+1. The link is marked as inactive (`is_active = 0`) in internal/models/link.go:109
+2. The database record is preserved
+3. All analytics data remains intact
+4. The short URL returns **410 Gone** instead of redirecting
+
+```go
+func SoftDeleteLink(db *sql.DB, id int64) error {
+    res, err := db.Exec(
+        `UPDATE links SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        id,
+    )
+    if err != nil {
+        return fmt.Errorf("soft delete link: %w", err)
+    }
+    n, _ := res.RowsAffected()
+    if n == 0 {
+        return sql.ErrNoRows
+    }
+    return nil
+}
+```
+
+### HTTP 410 Gone Response
+
+Deleted links return a 410 Gone status code as defined in internal/handlers/redirect.go:53:
+
+```go
+if !link.IsActive {
+    w.WriteHeader(http.StatusGone)
+    w.Write([]byte("This link is no longer active."))
+    return
+}
+```
+
+<Info>
+The 410 Gone status code (vs. 404 Not Found) signals to clients that the resource previously existed but has been intentionally removed.
+</Info>
+
+### API Endpoint
+
+```bash
+DELETE /api/links/{id}
+Authorization: Bearer YOUR_PASSWORD
+```
+
+Returns `204 No Content` on success.
+
+## Listing and Searching
+
+The list endpoint supports pagination and full-text search across slug, destination, title, and tags:
+
+```bash
+GET /api/links?limit=25&offset=0&search=example
+Authorization: Bearer YOUR_PASSWORD
+```
+
+### Response Format
+
+```json
+{
+  "links": [
+    {
+      "id": 1,
+      "slug": "abc123",
+      "domain": "short.example.com",
+      "short_url": "https://short.example.com/abc123",
+      "destination": "https://example.com/page",
+      "title": "Example",
+      "tags": "tag1, tag2",
+      "notes": "Notes",
+      "is_active": true,
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  ],
+  "total": 100,
+  "limit": 25,
+  "offset": 0
+}
+```
+
+### Query Parameters
+
+- `limit` (default: 25, max: 100): Number of results per page
+- `offset` (default: 0): Number of results to skip
+- `search`: Filter by slug, destination, title, or tags
+
+<Tip>
+Use the `search` parameter to quickly find links by any text content. The search is case-insensitive and uses SQL LIKE matching.
+</Tip>
+
+## Database Schema
+
+Links are stored with the following structure defined in internal/models/link.go:9:
+
+```go
+type Link struct {
+    ID          int64     `json:"id"`
+    Slug        string    `json:"slug"`
+    Domain      string    `json:"domain"`
+    ShortURL    string    `json:"short_url"`
+    Destination string    `json:"destination"`
+    Title       string    `json:"title"`
+    Tags        string    `json:"tags"`
+    Notes       string    `json:"notes"`
+    IsActive    bool      `json:"is_active"`
+    CreatedAt   time.Time `json:"created_at"`
+    UpdatedAt   time.Time `json:"updated_at"`
+}
+```
+
+A unique constraint enforces `UNIQUE(slug, domain)` to prevent duplicate slugs within the same domain.

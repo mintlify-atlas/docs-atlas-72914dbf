@@ -1,0 +1,342 @@
+---
+title: Database Backups
+description: Configure automatic SQLite backups to S3-compatible storage using Litestream
+---
+
+Dubly uses [Litestream](https://litestream.io) to continuously replicate your SQLite database to S3-compatible storage. This provides real-time backup protection without manual intervention.
+
+## Why S3 Backups?
+
+- **Continuous replication**: Changes are streamed to S3 as they happen
+- **Point-in-time recovery**: Restore to any point in time
+- **Off-server storage**: Survives server failures or data loss
+- **Low cost**: S3-compatible storage is inexpensive
+- **Works with multiple providers**: AWS S3, Backblaze B2, Cloudflare R2, MinIO, etc.
+
+<Warning>
+S3 backups are strongly recommended for production deployments. Without backups, server failures will result in permanent data loss.
+</Warning>
+
+## Configuration During Install
+
+The install script prompts for S3 configuration. If you skipped this step, you can configure backups manually.
+
+## Manual Configuration
+
+<Steps>
+  <Step title="Add S3 credentials to .env">
+    Edit `/opt/dubly/.env` and add:
+
+    ```bash
+    # Litestream S3 backups
+    LITESTREAM_S3_BUCKET=your-bucket-name
+    LITESTREAM_S3_ENDPOINT=https://s3.amazonaws.com
+    LITESTREAM_S3_REGION=us-east-1
+    LITESTREAM_ACCESS_KEY_ID=your-access-key
+    LITESTREAM_SECRET_ACCESS_KEY=your-secret-key
+    ```
+
+    For AWS S3, use endpoint `https://s3.amazonaws.com`.
+    
+    For Backblaze B2, use endpoint like `https://s3.us-west-001.backblazeb2.com`.
+    
+    For Cloudflare R2, use endpoint like `https://<account-id>.r2.cloudflarestorage.com`.
+  </Step>
+
+  <Step title="Update systemd service">
+    Edit `/etc/systemd/system/dubly.service` and change the `ExecStart` line:
+
+    ```ini
+    ExecStart=/usr/bin/bash /opt/dubly/scripts/start.sh
+    ```
+
+    This wrapper script handles Litestream replication.
+  </Step>
+
+  <Step title="Reload and restart">
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl restart dubly
+    ```
+  </Step>
+
+  <Step title="Verify replication">
+    Check that Litestream is running:
+
+    ```bash
+    journalctl -u dubly -f
+    ```
+
+    You should see logs indicating Litestream has started replication.
+  </Step>
+</Steps>
+
+## Litestream Configuration File
+
+The configuration lives in `/opt/dubly/litestream.yml`:
+
+```yaml
+dbs:
+  - path: ${DUBLY_DB_PATH:-./dubly.db}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        path: dubly
+        endpoint: ${LITESTREAM_S3_ENDPOINT}
+        region: ${LITESTREAM_S3_REGION}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        force-path-style: true
+```
+
+All values are read from environment variables defined in `/opt/dubly/.env`.
+
+## How the Backup Process Works
+
+### Initial Deployment (No Database)
+
+When `/opt/dubly/dubly.db` doesn't exist, the start script attempts to restore from S3:
+
+```bash
+litestream restore -config litestream.yml -if-replica-exists "$DB_PATH"
+```
+
+The `-if-replica-exists` flag makes this safe for first-time deployments (exits successfully if no backup exists).
+
+### Normal Operation
+
+The service runs Dubly under Litestream supervision:
+
+```bash
+litestream replicate -config litestream.yml -exec "./dubly"
+```
+
+Litestream:
+1. Starts the Dubly process
+2. Monitors the SQLite WAL (Write-Ahead Log) for changes
+3. Continuously uploads changes to S3
+4. Manages snapshot creation
+
+### What Gets Backed Up
+
+Your S3 bucket will contain:
+
+```
+my-bucket/
+  dubly/
+    generations/
+      <generation-id>/
+        snapshots/
+          00000000<position>.snapshot.lz4
+        wal/
+          00000000<position>/<wal-segment>.wal.lz4
+```
+
+- **Snapshots**: Full database backups at points in time
+- **WAL segments**: Incremental changes between snapshots
+- **Generations**: Track different deployment histories
+
+## Restoring From Backup
+
+### Restore to Current Server
+
+<Steps>
+  <Step title="Stop Dubly">
+    ```bash
+    sudo systemctl stop dubly
+    ```
+  </Step>
+
+  <Step title="Restore database">
+    Restore to the latest point:
+
+    ```bash
+    cd /opt/dubly
+    sudo litestream restore -config litestream.yml dubly.db
+    ```
+
+    Or restore to a specific timestamp:
+
+    ```bash
+    sudo litestream restore -config litestream.yml -timestamp 2026-03-01T12:00:00Z dubly.db
+    ```
+  </Step>
+
+  <Step title="Restart Dubly">
+    ```bash
+    sudo systemctl start dubly
+    ```
+  </Step>
+</Steps>
+
+### Restore to New Server
+
+<Steps>
+  <Step title="Install Dubly without S3 prompts">
+    Run the install script and skip S3 configuration, or manually add S3 credentials to `.env` before starting.
+  </Step>
+
+  <Step title="Stop the service">
+    ```bash
+    sudo systemctl stop dubly
+    ```
+  </Step>
+
+  <Step title="Restore from S3">
+    ```bash
+    cd /opt/dubly
+    sudo litestream restore -config litestream.yml dubly.db
+    ```
+  </Step>
+
+  <Step title="Start Dubly">
+    ```bash
+    sudo systemctl start dubly
+    ```
+  </Step>
+</Steps>
+
+The database will immediately resume replication to S3 on startup.
+
+## Monitoring Backups
+
+### Check Replication Status
+
+View Litestream logs in the Dubly service output:
+
+```bash
+journalctl -u dubly -f | grep litestream
+```
+
+You should see messages like:
+```
+litestream initialized replica for /opt/dubly/dubly.db
+```
+
+### Verify S3 Contents
+
+List your S3 bucket to confirm files are being uploaded:
+
+```bash
+aws s3 ls s3://your-bucket-name/dubly/ --recursive
+```
+
+### Check Last Backup Time
+
+Litestream embeds timestamp information in the WAL segment filenames. Recent segments indicate active replication.
+
+## Cost Estimation
+
+Dubly's SQLite database is typically small (< 100MB for thousands of links). Example monthly costs:
+
+| Provider | Storage (100MB) | Requests | Total/month |
+|----------|----------------|----------|-------------|
+| AWS S3 | $0.002 | $0.01 | ~$0.01 |
+| Backblaze B2 | $0.005 | Free | ~$0.01 |
+| Cloudflare R2 | $0.015 | Free | ~$0.02 |
+
+Litestream is extremely efficient with storage due to compression and incremental uploads.
+
+## Backup Best Practices
+
+<Warning>
+**Test your backups regularly**. Perform a test restore every few months to verify your backup configuration works.
+</Warning>
+
+- Use a dedicated S3 bucket for Dubly backups
+- Enable S3 bucket versioning for extra protection
+- Restrict S3 credentials to minimum required permissions
+- Store S3 credentials securely (not in version control)
+- Monitor for Litestream errors in service logs
+
+## S3 Provider Examples
+
+### AWS S3
+
+```bash
+LITESTREAM_S3_BUCKET=dubly-backups
+LITESTREAM_S3_ENDPOINT=https://s3.amazonaws.com
+LITESTREAM_S3_REGION=us-east-1
+LITESTREAM_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+LITESTREAM_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+### Backblaze B2
+
+```bash
+LITESTREAM_S3_BUCKET=dubly-backups
+LITESTREAM_S3_ENDPOINT=https://s3.us-west-001.backblazeb2.com
+LITESTREAM_S3_REGION=us-west-001
+LITESTREAM_ACCESS_KEY_ID=<application-key-id>
+LITESTREAM_SECRET_ACCESS_KEY=<application-key>
+```
+
+### Cloudflare R2
+
+```bash
+LITESTREAM_S3_BUCKET=dubly-backups
+LITESTREAM_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+LITESTREAM_S3_REGION=auto
+LITESTREAM_ACCESS_KEY_ID=<r2-access-key-id>
+LITESTREAM_SECRET_ACCESS_KEY=<r2-secret-access-key>
+```
+
+## Troubleshooting
+
+### Litestream not starting
+
+Check for missing environment variables:
+```bash
+sudo -u root bash -c 'set -a; source /opt/dubly/.env; set +a; litestream version'
+```
+
+Common issues:
+- Missing S3 credentials in `.env`
+- Invalid endpoint URL
+- Incorrect bucket permissions
+
+### Permission errors on S3
+
+Your S3 credentials need these permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::dubly-backups",
+        "arn:aws:s3:::dubly-backups/*"
+      ]
+    }
+  ]
+}
+```
+
+### Restore fails with "replica not found"
+
+This means no backup exists in S3 yet. Verify:
+
+1. Litestream has been running long enough to upload initial snapshot
+2. S3 bucket name and path are correct
+3. S3 credentials are valid
+
+Check S3 bucket contents to confirm files exist.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Updating Dubly" icon="arrow-up" href="/deployment/updating">
+    Learn how to safely update your deployment
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Explore all environment variables
+  </Card>
+</CardGroup>

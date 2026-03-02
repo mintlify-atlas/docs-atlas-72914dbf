@@ -1,0 +1,217 @@
+---
+title: Database Configuration
+description: SQLite database setup and configuration for Dubly
+---
+
+Dubly uses SQLite as its database, configured for optimal performance and reliability in a single-writer URL shortener workload.
+
+## Database Path
+
+The database file location is controlled by the `DUBLY_DB_PATH` environment variable:
+
+```bash
+export DUBLY_DB_PATH="/var/lib/dubly/dubly.db"
+```
+
+**Default:** `./dubly.db` (current working directory)
+
+The database file is created automatically on first startup if it doesn't exist. Ensure the directory exists and Dubly has write permissions.
+
+<Note>
+  In production, use an absolute path on a persistent volume. Losing the database file means losing all links and analytics.
+</Note>
+
+## SQLite Pragmas
+
+Dubly applies these pragmas on every database connection for optimal performance:
+
+### WAL Mode
+
+```sql
+PRAGMA journal_mode=WAL
+```
+
+Write-Ahead Logging (WAL) mode improves concurrency by allowing reads to proceed while writes are in progress. This is essential for Dubly's workload where redirects (reads) vastly outnumber link management operations (writes).
+
+**Benefits:**
+- Readers don't block writers
+- Writers don't block readers
+- Better performance under load
+
+### Busy Timeout
+
+```sql
+PRAGMA busy_timeout=5000
+```
+
+Waits up to 5 seconds for locks to be released before returning `SQLITE_BUSY`. This prevents immediate failures when the database is temporarily locked.
+
+### Synchronous Mode
+
+```sql
+PRAGMA synchronous=NORMAL
+```
+
+Balances durability and performance. With WAL mode, `NORMAL` is safe and provides good performance. Data is synced at critical moments (checkpoints) rather than after every write.
+
+### Foreign Keys
+
+```sql
+PRAGMA foreign_keys=ON
+```
+
+Enables foreign key constraint enforcement. Ensures clicks always reference valid links in the database.
+
+### Cache Size
+
+```sql
+PRAGMA cache_size=-20000
+```
+
+Sets the page cache to 20 MB (negative value means kilobytes). Larger cache reduces disk I/O for frequently accessed data.
+
+## Connection Pool
+
+Dubly sets `MaxOpenConns(1)` to enforce single-writer access:
+
+```go
+db.SetMaxOpenConns(1)
+```
+
+SQLite handles one writer at a time. This setting prevents lock contention and `SQLITE_BUSY` errors by serializing writes at the connection pool level rather than waiting for SQLite locks.
+
+**Implications:**
+- All writes are serialized through a single connection
+- Reads use the same connection (safe with WAL mode)
+- No risk of deadlocks or lock timeout errors
+- Performance is excellent for Dubly's read-heavy workload
+
+## Schema
+
+The database schema is automatically created and migrated on startup.
+
+### Links Table
+
+Stores short link definitions:
+
+```sql
+CREATE TABLE IF NOT EXISTS links (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug          TEXT    NOT NULL,
+    domain        TEXT    NOT NULL,
+    destination   TEXT    NOT NULL,
+    title         TEXT    NOT NULL DEFAULT '',
+    tags          TEXT    NOT NULL DEFAULT '',
+    notes         TEXT    NOT NULL DEFAULT '',
+    is_active     INTEGER NOT NULL DEFAULT 1,
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(slug, domain)
+);
+```
+
+**Key points:**
+- Slug uniqueness is per-domain (composite unique constraint)
+- `is_active=0` implements soft deletes
+- Inactive links return `410 Gone` on redirect
+
+**Indexes:**
+```sql
+CREATE INDEX IF NOT EXISTS idx_links_domain_slug 
+    ON links(domain, slug) WHERE is_active = 1;
+```
+
+Partial index on active links for fast redirect lookups.
+
+### Clicks Table
+
+Stores analytics events:
+
+```sql
+CREATE TABLE IF NOT EXISTS clicks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    link_id         INTEGER NOT NULL,
+    clicked_at      DATETIME NOT NULL,
+    ip              TEXT,
+    user_agent      TEXT,
+    referer         TEXT,
+    referer_domain  TEXT,
+    country         TEXT,
+    city            TEXT,
+    region          TEXT,
+    latitude        REAL,
+    longitude       REAL,
+    browser         TEXT,
+    browser_version TEXT,
+    os              TEXT,
+    device_type     TEXT,
+    FOREIGN KEY (link_id) REFERENCES links(id)
+);
+```
+
+**Indexes:**
+```sql
+CREATE INDEX IF NOT EXISTS idx_clicks_link_id ON clicks(link_id);
+CREATE INDEX IF NOT EXISTS idx_clicks_clicked_at ON clicks(clicked_at);
+```
+
+Optimizes queries for analytics dashboards that filter by link and time range.
+
+## Migrations
+
+Dubly uses a simple migration strategy:
+
+```go
+func Migrate(db *sql.DB) error {
+    _, err := db.Exec(schema)
+    return err
+}
+```
+
+The schema uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`, making it idempotent. This approach works because:
+
+1. Dubly's schema is stable
+2. There are no destructive changes needed
+3. Startup time impact is negligible
+
+<Warning>
+  If you modify the database schema manually, ensure you preserve the unique constraints and foreign keys. Breaking these can cause application errors.
+</Warning>
+
+## Soft Deletes
+
+Dubly never hard-deletes links from the database. When you delete a link:
+
+1. `is_active` is set to `0`
+2. The row remains in the database
+3. Redirects for inactive links return `410 Gone`
+4. Slug uniqueness checks include inactive links
+
+This prevents slug reuse and preserves analytics history.
+
+## Backup Considerations
+
+With WAL mode enabled, a complete backup requires three files:
+
+- `dubly.db` - main database file
+- `dubly.db-wal` - write-ahead log
+- `dubly.db-shm` - shared memory file
+
+For consistent backups:
+
+1. Use SQLite's backup API (preferred)
+2. Stop Dubly before copying files
+3. Run `PRAGMA wal_checkpoint(TRUNCATE)` before backup
+
+The install script provides S3 backup automation if configured during setup.
+
+## Performance Characteristics
+
+With the default configuration:
+
+- **Redirects:** < 1ms (with cache hit)
+- **Link creation:** 1-5ms
+- **Analytics writes:** Batched every 30s, non-blocking
+- **Database size:** ~1 KB per link, ~200 bytes per click
+
+A typical deployment with 10,000 links and 1 million clicks uses approximately 200 MB of disk space.

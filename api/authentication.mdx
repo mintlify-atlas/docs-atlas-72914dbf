@@ -1,0 +1,156 @@
+---
+title: Authentication
+description: How to authenticate API requests
+---
+
+## API Key Authentication
+
+All API endpoints under `/api/*` require authentication using an API key passed in the `X-API-Key` header.
+
+### Header Format
+
+```bash
+X-API-Key: your-secret-key
+```
+
+### Example Request
+
+```bash
+curl -X GET http://localhost:8080/api/links \
+  -H "X-API-Key: your-secret-key"
+```
+
+## Setting the API Password
+
+The API password is configured via the `DUBLY_PASSWORD` environment variable when starting the server.
+
+### During Installation
+
+If you used the install script, you were prompted to set the API password. It's stored in `/opt/dubly/.env`:
+
+```bash
+DUBLY_PASSWORD=your-secret-key
+```
+
+### Manual Configuration
+
+For local development or manual deployments:
+
+```bash
+export DUBLY_PASSWORD=your-secret-key
+go run ./cmd/server
+```
+
+Or using an `.env` file:
+
+```bash
+# .env
+DUBLY_PASSWORD=your-secret-key
+DUBLY_DOMAINS=short.io,go.example.com
+```
+
+### Changing the Password
+
+1. Update the `DUBLY_PASSWORD` in your `.env` file
+2. Restart the Dubly service:
+
+```bash
+sudo systemctl restart dubly
+```
+
+## Authentication Errors
+
+### Missing API Key
+
+Request:
+```bash
+curl -X GET http://localhost:8080/api/links
+```
+
+Response (401):
+```json
+{
+  "error": "unauthorized"
+}
+```
+
+### Invalid API Key
+
+Request:
+```bash
+curl -X GET http://localhost:8080/api/links \
+  -H "X-API-Key: wrong-key"
+```
+
+Response (401):
+```json
+{
+  "error": "unauthorized"
+}
+```
+
+## Security Best Practices
+
+### Protect Your API Key
+
+- **Never commit** your API password to version control
+- **Use environment variables** or secure secret management systems
+- **Rotate regularly** - change your password periodically
+- **Use HTTPS** - always access the API over HTTPS in production
+
+### Strong Passwords
+
+Generate a strong, random password:
+
+```bash
+# Using openssl
+openssl rand -base64 32
+
+# Using /dev/urandom
+head -c 32 /dev/urandom | base64
+```
+
+### HTTPS in Production
+
+The install script configures Caddy to automatically provision and renew SSL certificates. Always use HTTPS for API requests in production:
+
+```bash
+curl -X GET https://short.io/api/links \
+  -H "X-API-Key: your-secret-key"
+```
+
+### Single User Design
+
+Dubly is designed as a **single-user** system. There is one API password that grants full access to:
+
+- Create, read, update, and delete all links
+- Access all analytics data
+- Manage all domains
+
+If you need multi-user access with different permissions, consider:
+
+- Running separate Dubly instances
+- Implementing a proxy with custom authorization logic
+- Contributing multi-user features to the project
+
+## Implementation Details
+
+The authentication middleware uses constant-time comparison to prevent timing attacks:
+
+```go
+// From internal/handlers/middleware.go:8
+func AuthMiddleware(password string) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            key := r.Header.Get("X-API-Key")
+            if subtle.ConstantTimeCompare([]byte(key), []byte(password)) != 1 {
+                jsonError(w, "unauthorized", http.StatusUnauthorized)
+                return
+            }
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+```
+
+This ensures that incorrect API keys take the same time to verify as correct ones, preventing attackers from using timing information to guess the password.

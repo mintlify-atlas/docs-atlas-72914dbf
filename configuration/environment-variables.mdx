@@ -1,0 +1,128 @@
+---
+title: Environment Variables
+description: Complete reference for all Dubly environment variables
+---
+
+Dubly is configured entirely through environment variables. This allows for easy deployment across different environments and container orchestration platforms.
+
+## Required Variables
+
+These variables must be set for Dubly to start.
+
+<ParamField path="DUBLY_PASSWORD" type="string" required>
+  API password for authentication. Required for all `/api/*` endpoints via the `X-API-Key` header.
+  
+  **Security Note:** Use a strong, randomly generated password. This is the only authentication mechanism for the admin UI and API.
+</ParamField>
+
+<ParamField path="DUBLY_DOMAINS" type="string" required>
+  Comma-separated list of allowed domains for short links.
+  
+  **Example:** `short.io,go.example.com,links.company.com`
+  
+  Domain matching is case-insensitive. Only links with these domains can be created or accessed.
+</ParamField>
+
+## Server Configuration
+
+<ParamField path="DUBLY_PORT" type="string" default="8080">
+  Port number the HTTP server listens on.
+  
+  **Example:** `3000`
+</ParamField>
+
+<ParamField path="DUBLY_APP_NAME" type="string" default="Dubly">
+  Application name displayed in the admin UI.
+  
+  **Example:** `Company Links`
+</ParamField>
+
+## Database Configuration
+
+<ParamField path="DUBLY_DB_PATH" type="string" default="./dubly.db">
+  Path to the SQLite database file. Will be created automatically if it doesn't exist.
+  
+  **Example:** `/var/lib/dubly/dubly.db`
+  
+  The database file should be on a persistent volume in production environments.
+</ParamField>
+
+## Geolocation
+
+<ParamField path="DUBLY_GEOIP_PATH" type="string" default="">
+  Path to the MaxMind GeoLite2-City.mmdb file for IP geolocation lookups.
+  
+  **Example:** `/var/lib/dubly/GeoLite2-City.mmdb`
+  
+  When not set or empty, geolocation is gracefully disabled. Analytics will still be collected but without geographic data (country, city, region, coordinates will be empty).
+  
+  Download the GeoLite2 database from [MaxMind](https://www.maxmind.com/en/geolite2/signup).
+</ParamField>
+
+## Analytics Configuration
+
+Dubly uses an in-memory buffer for click analytics that periodically flushes to the database. These settings control the buffering behavior.
+
+<ParamField path="DUBLY_FLUSH_INTERVAL" type="duration" default="30s">
+  How often the analytics buffer is flushed to disk.
+  
+  **Format:** Duration string (e.g., `10s`, `1m`, `90s`)
+  
+  **Example:** `60s` for one minute intervals
+  
+  Shorter intervals mean more frequent writes (higher I/O) but less data loss on crashes. Must be a positive value.
+</ParamField>
+
+<ParamField path="DUBLY_BUFFER_SIZE" type="integer" default="50000">
+  Maximum number of click events held in memory before flushing.
+  
+  **Example:** `100000`
+  
+  When the buffer is full, new clicks are dropped rather than blocking redirects. Size this based on your expected traffic volume and flush interval. Must be a positive value.
+</ParamField>
+
+## Cache Configuration
+
+<ParamField path="DUBLY_CACHE_SIZE" type="integer" default="10000">
+  Maximum number of short links cached in memory for fast redirects.
+  
+  **Example:** `25000`
+  
+  The cache uses an LRU (Least Recently Used) eviction policy. Higher values reduce database lookups for popular links but consume more memory. Must be a positive value.
+  
+  **Memory estimate:** Each cached entry uses approximately 200-300 bytes, so the default 10,000 entries use roughly 2-3 MB of RAM.
+</ParamField>
+
+## Validation
+
+Dubly validates configuration on startup:
+
+- `DUBLY_PASSWORD` and `DUBLY_DOMAINS` must be non-empty
+- `DUBLY_FLUSH_INTERVAL`, `DUBLY_BUFFER_SIZE`, and `DUBLY_CACHE_SIZE` must be positive values
+- Invalid values for numeric/duration fields fall back to defaults
+- Invalid domain list format will cause startup failure
+
+## Example Configuration
+
+```bash
+# Required
+export DUBLY_PASSWORD="your-secure-random-password"
+export DUBLY_DOMAINS="short.io,go.example.com"
+
+# Optional - Server
+export DUBLY_PORT="8080"
+export DUBLY_APP_NAME="Company Links"
+
+# Optional - Database
+export DUBLY_DB_PATH="/var/lib/dubly/dubly.db"
+
+# Optional - Geolocation
+export DUBLY_GEOIP_PATH="/var/lib/dubly/GeoLite2-City.mmdb"
+
+# Optional - Analytics
+export DUBLY_FLUSH_INTERVAL="30s"
+export DUBLY_BUFFER_SIZE="50000"
+
+# Optional - Cache
+export DUBLY_CACHE_SIZE="10000"
+```

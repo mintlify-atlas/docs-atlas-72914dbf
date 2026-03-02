@@ -1,0 +1,278 @@
+---
+title: Production Setup
+description: Deploy Dubly to production with automatic HTTPS and systemd service management
+---
+
+This guide walks through deploying Dubly on a fresh Ubuntu or Debian server using the automated install script.
+
+## Prerequisites
+
+- Fresh Ubuntu or Debian server
+- Root or sudo access
+- Domain(s) pointed to your server's IP address (DNS A records)
+- Port 22 (SSH), 80 (HTTP), and 443 (HTTPS) accessible
+
+<Warning>
+The install script configures UFW firewall to block port 8080 from external access. Only ports 80 and 443 will be publicly accessible.
+</Warning>
+
+## Quick Install
+
+Run the install script directly from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/scmmishra/dubly/main/scripts/install.sh | sudo bash
+```
+
+Or clone the repository first:
+
+```bash
+git clone https://github.com/scmmishra/dubly.git
+cd dubly
+sudo bash scripts/install.sh
+```
+
+## Installation Process
+
+The script will guide you through configuration prompts:
+
+<Steps>
+  <Step title="Domain Configuration">
+    Enter your admin domain (e.g., `dubly.example.com`) and any additional redirect domains.
+    
+    All domains must have DNS A records pointing to your server's IP address before installation.
+  </Step>
+
+  <Step title="API Password">
+    Set your API password or leave blank to auto-generate a secure password.
+    
+    <Warning>
+    If auto-generated, the password will be displayed once. Save it immediately.
+    </Warning>
+  </Step>
+
+  <Step title="S3 Backups (Recommended)">
+    Configure S3-compatible storage for automatic database backups via Litestream.
+    
+    You'll need:
+    - S3 bucket name
+    - S3 endpoint URL (e.g., `https://s3.amazonaws.com`)
+    - S3 region (e.g., `us-east-1`)
+    - Access key ID
+    - Secret access key
+    
+    Works with AWS S3, Backblaze B2, Cloudflare R2, and other S3-compatible providers.
+  </Step>
+
+  <Step title="GeoIP (Optional)">
+    Provide a MaxMind license key for geolocation data in analytics.
+    
+    Get a free key at [maxmind.com/en/geolite2/signup](https://www.maxmind.com/en/geolite2/signup)
+  </Step>
+
+  <Step title="Review and Confirm">
+    The script will show a summary of your configuration. Review and confirm to proceed.
+  </Step>
+</Steps>
+
+## What the Script Installs
+
+The install script automatically sets up:
+
+- **Go** (v1.24.0) to `/usr/local/go`
+- **Litestream** (v0.3.13) for SQLite replication
+- **Caddy** web server for automatic HTTPS
+- **Dubly** cloned to `/opt/dubly`
+- **Systemd service** for automatic startup
+- **UFW firewall** rules
+
+## Service management
+
+### Check service status
+
+```bash
+systemctl status dubly
+systemctl status caddy
+```
+
+### View Logs
+
+```bash
+# Follow live logs
+journalctl -u dubly -f
+
+# View recent logs
+journalctl -u dubly -n 100
+```
+
+### Restart Services
+
+```bash
+sudo systemctl restart dubly
+sudo systemctl restart caddy
+```
+
+## Systemd Service Configuration
+
+The script creates `/etc/systemd/system/dubly.service`:
+
+**Without S3 backups:**
+```ini
+[Unit]
+Description=Dubly URL Shortener
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dubly
+EnvironmentFile=/opt/dubly/.env
+Environment="PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/dubly/dubly
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dubly
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**With S3 backups:**
+
+The `ExecStart` line changes to:
+```ini
+ExecStart=/usr/bin/bash /opt/dubly/scripts/start.sh
+```
+
+This wrapper script handles Litestream database restoration and replication.
+
+## Caddy Configuration
+
+The script writes `/etc/caddy/Caddyfile` with automatic HTTPS:
+
+```caddy
+# Managed by Dubly install script
+dubly.example.com short.example.com {
+    reverse_proxy localhost:8080
+
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+```
+
+Caddy automatically provisions and renews Let's Encrypt certificates for all configured domains.
+
+## Firewall Configuration
+
+The script configures UFW with:
+
+```bash
+sudo ufw allow 80/tcp      # HTTP
+sudo ufw allow 443/tcp     # HTTPS
+sudo ufw deny 8080/tcp     # Block direct access to Dubly
+sudo ufw allow OpenSSH     # Keep SSH access
+sudo ufw enable
+```
+
+<Warning>
+Port 8080 is blocked externally. All traffic must go through Caddy on ports 80/443.
+</Warning>
+
+## DNS Configuration
+
+For each domain you configured, create an A record:
+
+```
+Type: A
+Name: @ (or subdomain)
+Value: <your-server-ip>
+TTL: 3600 (or automatic)
+```
+
+Wait for DNS propagation before accessing your domains. You can check with:
+
+```bash
+dig dubly.example.com +short
+```
+
+## Verify Installation
+
+Test the API endpoint:
+
+```bash
+curl -s https://dubly.example.com/api/links \
+  -H 'X-API-Key: your-password'
+```
+
+You should receive a JSON response with an empty links array.
+
+Access the admin UI at `https://dubly.example.com`
+
+## File Locations
+
+- Installation directory: `/opt/dubly`
+- Binary: `/opt/dubly/dubly`
+- Environment file: `/opt/dubly/.env`
+- Database: `/opt/dubly/dubly.db`
+- GeoIP database: `/opt/dubly/GeoLite2-City.mmdb`
+- Systemd service: `/etc/systemd/system/dubly.service`
+- Caddyfile: `/etc/caddy/Caddyfile`
+
+## Re-running the Install Script
+
+The install script is idempotent and safe to re-run:
+
+- If `/opt/dubly/.env` exists, you'll be prompted to keep or overwrite configuration
+- Existing services will be updated, not duplicated
+- Dependencies already installed will be skipped
+
+## Troubleshooting
+
+### Service won't start
+
+Check logs for errors:
+```bash
+journalctl -u dubly -n 50
+```
+
+Common issues:
+- Missing required environment variables in `/opt/dubly/.env`
+- Database file permissions
+- Port 8080 already in use
+
+### HTTPS not working
+
+Check Caddy status:
+```bash
+systemctl status caddy
+journalctl -u caddy -n 50
+```
+
+Common issues:
+- DNS A records not pointing to server
+- Firewall blocking ports 80/443
+- Domain already has certificate from another service
+
+### Cannot reach admin UI
+
+Verify:
+1. Dubly service is running: `systemctl status dubly`
+2. Caddy is running: `systemctl status caddy`
+3. DNS is resolving: `dig yourdomain.com`
+4. Firewall allows 80/443: `sudo ufw status`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configure Backups" icon="database" href="/deployment/backups">
+    Set up automated S3 backups with Litestream
+  </Card>
+  <Card title="Updating Dubly" icon="arrow-up" href="/deployment/updating">
+    Keep your installation up to date
+  </Card>
+</CardGroup>

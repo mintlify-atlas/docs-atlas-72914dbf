@@ -1,0 +1,320 @@
+---
+title: Custom Domains
+description: Configure and manage multiple domains for your short links
+---
+
+## Overview
+
+Dubly supports hosting short links on multiple custom domains. Each link is associated with a specific domain, allowing you to organize links by brand, campaign, or purpose.
+
+## How Multi-Domain Works
+
+Dubly validates every link creation and update against a configured allowlist of domains. This prevents unauthorized domains from being used in your installation.
+
+### Domain Validation
+
+Domain checking is case-insensitive and uses exact matching as defined in internal/config/config.go:66:
+
+```go
+func (c *Config) IsDomainAllowed(domain string) bool {
+    for _, d := range c.Domains {
+        if strings.EqualFold(d, domain) {
+            return true
+        }
+    }
+    return false
+}
+```
+
+When creating or updating links, the handler normalizes and validates the domain in internal/handlers/links.go:67:
+
+```go
+req.Domain = strings.ToLower(req.Domain)
+if !h.Cfg.IsDomainAllowed(req.Domain) {
+    jsonError(w, "domain not allowed", http.StatusBadRequest)
+    return
+}
+```
+
+<Info>
+Domain validation happens on every link creation and update. If a domain is not in the allowlist, the API will return a 400 Bad Request error.
+</Info>
+
+## Configuration Methods
+
+### Environment Variable
+
+Domains are configured via the `DUBLY_DOMAINS` environment variable as a comma-separated list:
+
+```bash
+DUBLY_DOMAINS="short.example.com,go.myapp.com,link.mybrand.io"
+```
+
+The configuration loader parses this list in internal/config/config.go:33:
+
+```go
+domainsRaw := os.Getenv("DUBLY_DOMAINS")
+if domainsRaw == "" {
+    return nil, fmt.Errorf("DUBLY_DOMAINS is required")
+}
+var domains []string
+for _, d := range strings.Split(domainsRaw, ",") {
+    d = strings.TrimSpace(d)
+    if d != "" {
+        domains = append(domains, d)
+    }
+}
+```
+
+<Note>
+`DUBLY_DOMAINS` is a required environment variable. Dubly will not start without at least one domain configured.
+</Note>
+
+### Using the add-domain.sh Script
+
+For production installations using the install script, Dubly includes a helper script to add domains without manual editing:
+
+```bash
+sudo bash scripts/add-domain.sh short.example.com
+```
+
+The script performs the following actions:
+
+1. **Validates the domain format** (must contain at least one dot, no spaces)
+2. **Checks for duplicates** in the existing domain list
+3. **Updates the .env file** by appending the domain to `DUBLY_DOMAINS`
+4. **Updates the Caddyfile** to serve the new domain
+5. **Restarts services** (dubly and caddy systemd units)
+
+### Script Implementation
+
+The domain validation logic from scripts/add-domain.sh:46:
+
+```bash
+# Validate domain contains no spaces
+if [[ "$DOMAIN" == *" "* ]]; then
+  error "Domain cannot contain spaces."
+  exit 1
+fi
+
+# Validate domain has at least one dot
+if [[ "$DOMAIN" != *.* ]]; then
+  error "Domain must contain at least one dot (e.g. short.example.com)."
+  exit 1
+fi
+```
+
+Duplicate checking in scripts/add-domain.sh:68:
+
+```bash
+CURRENT_DOMAINS="$(grep '^DUBLY_DOMAINS=' "$ENV_FILE" | cut -d= -f2-)"
+
+IFS=',' read -ra DOMAIN_LIST <<< "$CURRENT_DOMAINS"
+for d in "${DOMAIN_LIST[@]}"; do
+  d="$(echo "$d" | xargs)"
+  if [ "$d" = "$DOMAIN" ]; then
+    error "Domain '$DOMAIN' is already in DUBLY_DOMAINS."
+    exit 1
+  fi
+done
+```
+
+Updating the .env file in scripts/add-domain.sh:82:
+
+```bash
+info "Adding $DOMAIN to $ENV_FILE..."
+sed -i "s|^DUBLY_DOMAINS=.*|&,$DOMAIN|" "$ENV_FILE"
+ok "Updated DUBLY_DOMAINS in $ENV_FILE"
+```
+
+<Tip>
+The add-domain.sh script requires root access because it modifies system files in `/opt/dubly` and `/etc/caddy`, and restarts systemd services.
+</Tip>
+
+## DNS Configuration
+
+For each domain you add, you must configure DNS to point to your Dubly server:
+
+1. Create an A record pointing to your server's IP address:
+   ```
+   short.example.com.  A  203.0.113.10
+   ```
+
+2. If using IPv6, also create an AAAA record:
+   ```
+   short.example.com.  AAAA  2001:db8::1
+   ```
+
+3. Wait for DNS propagation (usually 5-60 minutes)
+
+4. Verify DNS resolution:
+   ```bash
+   dig short.example.com
+   ```
+
+<Info>
+The add-domain.sh script reminds you to configure DNS after adding a domain. The admin panel includes DNS verification on the Domains page.
+</Info>
+
+## Web Server Configuration
+
+### Caddy (Recommended)
+
+If you used the official install script, your Caddyfile will automatically be updated by add-domain.sh. The Caddyfile format is:
+
+```caddyfile
+short.example.com go.myapp.com {
+    reverse_proxy localhost:8080
+    encode gzip
+}
+```
+
+The script prepends new domains to the first line in scripts/add-domain.sh:98:
+
+```bash
+if [ ! -f "$CADDYFILE" ]; then
+  warn "No Caddyfile found at $CADDYFILE — skipping Caddy update."
+  warn "You will need to add the domain to your Caddyfile manually."
+else
+  info "Adding $DOMAIN to $CADDYFILE..."
+  # Prepend the new domain to the first non-comment line
+  sed -i "0,/^[^#].*{/s|{|$DOMAIN {|" "$CADDYFILE"
+  ok "Updated $CADDYFILE"
+fi
+```
+
+### Manual Configuration
+
+If you're not using the install script, manually add each domain to your reverse proxy configuration.
+
+**Nginx:**
+
+```nginx
+server {
+    listen 80;
+    server_name short.example.com go.myapp.com link.mybrand.io;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+**Apache:**
+
+```apache
+<VirtualHost *:80>
+    ServerName short.example.com
+    ServerAlias go.myapp.com link.mybrand.io
+
+    ProxyPreserveHost On
+    ProxyPass / http://localhost:8080/
+    ProxyPassReverse / http://localhost:8080/
+</VirtualHost>
+```
+
+<Note>
+Ensure you set the Host header correctly when proxying. Dubly uses the Host header to determine which domain a request is for.
+</Note>
+
+## Domain Routing
+
+When a request arrives, Dubly extracts the domain from the Host header and normalizes it in internal/handlers/redirect.go:24:
+
+```go
+host := r.Host
+// Strip port if present
+if h, _, err := net.SplitHostPort(host); err == nil {
+    host = h
+}
+host = strings.ToLower(host)
+```
+
+The slug and domain together form a unique lookup key. Links with the same slug on different domains are completely independent.
+
+## Slug Uniqueness
+
+Slugs are unique per-domain, enforced by a database constraint on `(slug, domain)`. This means:
+
+- `short.example.com/product` and `go.myapp.com/product` can coexist as different links
+- You cannot create two links with the same slug on the same domain
+- Slug collision detection in internal/models/link.go:121 checks both slug and domain:
+
+```go
+func SlugExists(db *sql.DB, slug, domain string) (bool, error) {
+    var count int
+    err := db.QueryRow(
+        `SELECT COUNT(*) FROM links WHERE slug = ? AND domain = ?`,
+        slug, domain,
+    ).Scan(&count)
+    return count > 0, err
+}
+```
+
+<Info>
+This check includes soft-deleted links to prevent UNIQUE constraint violations during slug auto-generation.
+</Info>
+
+## Removing Domains
+
+To remove a domain from your installation:
+
+1. Edit `/opt/dubly/.env` (or your .env file location)
+2. Remove the domain from the `DUBLY_DOMAINS` comma-separated list
+3. Update your Caddyfile or reverse proxy configuration
+4. Restart services:
+   ```bash
+   sudo systemctl restart dubly caddy
+   ```
+
+<Warning>
+Removing a domain does not delete associated links from the database. Those links will become inaccessible until the domain is re-added.
+</Warning>
+
+## Best Practices
+
+### Use Descriptive Domains
+
+Choose domain names that reflect their purpose:
+- `go.company.com` for internal employee links
+- `promo.brand.com` for marketing campaigns
+- `event.conference.com` for event-specific links
+
+### SSL/TLS Certificates
+
+Caddy automatically provisions Let's Encrypt certificates for all configured domains. For manual setups:
+
+- Use a wildcard certificate if you have many subdomains
+- Ensure your web server is configured for HTTPS on all domains
+- Dubly itself doesn't handle TLS; your reverse proxy should
+
+### Domain Verification
+
+Before creating links on a new domain, verify:
+
+1. DNS resolves correctly: `dig +short your-domain.com`
+2. Web server routes to Dubly: `curl -I http://your-domain.com`
+3. Domain is in allowlist: Check the Domains page in admin panel
+
+## Troubleshooting
+
+### "domain not allowed" Error
+
+**Cause:** The domain is not in `DUBLY_DOMAINS`
+
+**Solution:** Add the domain using add-domain.sh or by editing .env directly and restarting
+
+### Links Don't Redirect
+
+**Cause:** DNS not pointing to server, or web server not configured
+
+**Solution:** Verify DNS with `dig`, check web server logs, ensure reverse proxy forwards to Dubly
+
+### add-domain.sh Not Found
+
+**Cause:** You're not using the install script installation method
+
+**Solution:** Manually edit .env and web server config, then restart services

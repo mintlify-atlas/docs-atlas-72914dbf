@@ -1,0 +1,74 @@
+---
+title: Introduction
+description: A simple, self-hosted URL shortener built with Go and SQLite
+---
+
+# Welcome to Dubly
+
+Dubly is a simple, single-user URL shortener designed for self-hosting. Built with Go and SQLite, it provides a fast, reliable way to manage your short links with built-in analytics and multi-domain support.
+
+## Why Dubly?
+
+Dubly combines simplicity with powerful features, making it ideal for individuals and teams who want complete control over their URL shortening infrastructure:
+
+- **Zero dependencies** - Single binary with embedded SQLite database
+- **Self-hosted** - Your data stays on your servers
+- **Multi-domain** - Support for multiple custom domains
+- **Privacy-focused** - Built-in bot filtering for accurate analytics
+- **Production-ready** - Automatic HTTPS setup with Caddy
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/getting-started/quickstart">
+    Get Dubly up and running in minutes with our automated install script
+  </Card>
+  <Card title="API reference" icon="code" href="/api/overview">
+    Integrate Dubly into your workflow with the REST API
+  </Card>
+  <Card title="GitHub" icon="github" href="https://github.com/scmmishra/dubly">
+    View source code, report issues, and contribute
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Customize Dubly with environment variables
+  </Card>
+</CardGroup>
+
+## Key features at a glance
+
+### Single binary deployment
+
+Dubly compiles to a single executable with no external dependencies. The embedded SQLite database means you don't need to manage a separate database server.
+
+### Admin dashboard
+
+A built-in web interface lets you create, edit, and manage links without touching the API. View analytics, generate QR codes, and organize links with tags.
+
+### Click analytics
+
+Track every click with detailed metrics including:
+- Geographic data (country, city, coordinates)
+- Browser and device information
+- Referrer tracking
+- Time-series data
+
+### Bot filtering
+
+Automatic detection of bots and non-human traffic ensures your analytics only count real clicks. Dubly filters:
+- Link preview fetchers (iMessage, Discord, Slack, WhatsApp, etc.)
+- Search engine crawlers
+- HTTP client libraries (curl, wget, python-requests)
+- Datacenter and threat IPs
+
+## How it works
+
+Dubly uses a simple architecture optimized for performance:
+
+1. **Request handling** - The chi router processes incoming requests
+2. **Cache layer** - An LRU cache stores frequently accessed links
+3. **Analytics buffering** - Clicks are buffered in memory and flushed to SQLite in batches
+4. **Soft deletes** - Deleted links return `410 Gone` instead of `404`
+
+This design allows Dubly to handle high traffic while maintaining a small resource footprint.
+
+## Getting started
+
+Ready to deploy Dubly? Check out the [Quick start guide](/getting-started/quickstart) to get your instance running in minutes.
