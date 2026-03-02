@@ -1,0 +1,95 @@
+{
+  "projectType": "saas",
+  "projectName": "Dubly",
+  "projectDescription": "A simple, single-user URL shortener built with Go and SQLite, featuring an admin UI, click analytics, and support for multiple custom domains.",
+  "theme": "aspen",
+  "primaryColor": "#2563EB",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "features"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/installation",
+              "getting-started/quickstart",
+              "getting-started/local-development"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/link-management",
+              "features/analytics",
+              "features/custom-domains",
+              "features/qr-codes"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/database",
+              "configuration/geolocation"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/production-setup",
+              "deployment/backups",
+              "deployment/updating"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API",
+            "pages": [
+              "api/overview",
+              "api/authentication",
+              "api/links",
+              "api/redirects"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Single-binary URL shortener with SQLite backend",
+    "Admin dashboard with click analytics and charts",
+    "Multiple custom domain support",
+    "QR code generation for shortened links",
+    "Bot and datacenter traffic filtering",
+    "Geographic click tracking with GeoIP",
+    "RESTful API for link management",
+    "Soft-delete with 410 Gone status for deleted links",
+    "LRU caching for fast redirects",
+    "Automated deployment with install script"
+  ],
+  "publicApiSurface": [
+    "POST /api/links - Create a new short link",
+    "GET /api/links - List all links with pagination and search",
+    "GET /api/links/{id} - Get a specific link by ID",
+    "PATCH /api/links/{id} - Update a link",
+    "DELETE /api/links/{id} - Soft-delete a link",
+    "GET /{slug} - Redirect to destination URL",
+    "GET /admin - Admin dashboard",
+    "GET /admin/links/{id} - Link analytics page",
+    "GET /admin/links/{id}/qr - Generate QR code"
+  ]
+}
