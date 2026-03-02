@@ -60,7 +60,7 @@ You can specify your own slug when creating a link. Custom slugs:
 ```bash
 POST /api/links
 Content-Type: application/json
-Authorization: Bearer YOUR_PASSWORD
+X-API-Key: YOUR_PASSWORD
 
 {
   "destination": "https://example.com/very/long/url",
@@ -82,14 +82,30 @@ Each link supports three metadata fields:
 
 All metadata fields are optional and searchable through the list endpoint.
 
+## UTM Parameters
+
+When creating links through the [admin dashboard](/features/admin-dashboard), you can add UTM tracking parameters directly in the web interface. The dashboard provides dedicated fields for:
+
+- `utm_source`
+- `utm_medium`
+- `utm_campaign`
+- `utm_term`
+- `utm_content`
+
+These parameters are automatically appended to your destination URL. If the URL already contains UTM parameters, they are replaced with the new values.
+
+<Info>
+UTM parameter support is currently only available through the admin UI, not via the API endpoints. If you need to add UTM parameters via API, include them directly in the destination URL.
+</Info>
+
 ## Updating Links
 
 Links can be updated after creation. The update endpoint supports partial updates - only fields you provide will be modified:
 
 ```bash
-PUT /api/links/{id}
+PATCH /api/links/{id}
 Content-Type: application/json
-Authorization: Bearer YOUR_PASSWORD
+X-API-Key: YOUR_PASSWORD
 
 {
   "destination": "https://new-destination.com",

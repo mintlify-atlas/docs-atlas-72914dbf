@@ -1,0 +1,288 @@
+---
+title: Admin Dashboard
+description: Web interface for managing links, viewing analytics, and configuring domains
+---
+
+## Overview
+
+The admin dashboard provides a complete web interface for managing your Dubly instance. Access it at `/admin` on your Dubly domain to create links, view analytics, and manage settings without using the API.
+
+## Accessing the Dashboard
+
+Navigate to the `/admin` path on any of your configured domains:
+
+```
+https://short.io/admin
+```
+
+### Authentication
+
+The dashboard uses session-based authentication. Log in with the same password configured in the `DUBLY_PASSWORD` environment variable.
+
+<Info>
+The admin password is the same as your API password. There is no separate admin credential.
+</Info>
+
+## Dashboard Features
+
+### Link Management
+
+The main dashboard displays all your shortened links with:
+
+- **Link cards** showing slug, destination, title, and tags
+- **Click counts** for each link
+- **Search functionality** to filter links by slug, destination, title, or tags
+- **Pagination** (12 links per page)
+
+### Creating Links
+
+Click **New Link** to access the link creation form with the following fields:
+
+<ParamField path="destination" type="string" required>
+  The long URL to redirect to
+</ParamField>
+
+<ParamField path="domain" type="string" required>
+  Select from your configured domains
+</ParamField>
+
+<ParamField path="slug" type="string">
+  Custom slug (auto-generated if empty)
+</ParamField>
+
+<ParamField path="title" type="string">
+  Descriptive title for the link
+</ParamField>
+
+<ParamField path="tags" type="string">
+  Comma-separated tags for organization
+</ParamField>
+
+<ParamField path="notes" type="string">
+  Private notes about this link
+</ParamField>
+
+### UTM Parameters
+
+The admin UI includes built-in support for adding UTM tracking parameters to your links. When creating or editing a link, you can specify:
+
+- **utm_source** - Identify the source (e.g., newsletter, twitter)
+- **utm_medium** - Identify the medium (e.g., email, social)
+- **utm_campaign** - Campaign name
+- **utm_term** - Paid search keywords
+- **utm_content** - Differentiate similar content
+
+<Info>
+UTM parameters are automatically appended to your destination URL. If the URL already contains UTM parameters, they will be replaced with your new values.
+</Info>
+
+**How it works:**
+
+1. Enter your destination URL: `https://example.com/page`
+2. Fill in UTM fields in the admin form
+3. Dubly saves: `https://example.com/page?utm_source=twitter&utm_medium=social&utm_campaign=spring_sale`
+
+From the source code (`internal/web/links.go:246-257`):
+
+```go
+utmValues := map[string]string{
+    "utm_source":   values["utm_source"],
+    "utm_medium":   values["utm_medium"],
+    "utm_campaign": values["utm_campaign"],
+    "utm_term":     values["utm_term"],
+    "utm_content":  values["utm_content"],
+}
+
+link := &models.Link{
+    Slug:        slugVal,
+    Domain:      domain,
+    Destination: buildDestinationWithUTM(values["destination"], utmValues),
+    // ...
+}
+```
+
+### Editing Links
+
+Click on any link card to edit:
+
+- Change destination URL
+- Update slug or domain
+- Modify metadata (title, tags, notes)
+- Update UTM parameters
+- View current click count
+
+<Warning>
+Changing the slug or domain invalidates the cache for the old URL and may break existing links if they're already in use.
+</Warning>
+
+### Deleting Links
+
+Delete links with the trash icon. Deleted links:
+
+- Are soft-deleted (marked as `is_active = 0`)
+- Return `410 Gone` status on redirect attempts
+- Cannot be reactivated through the UI
+- Still appear in the database for historical tracking
+
+## Analytics Dashboard
+
+The dashboard home displays global statistics:
+
+### Overall Metrics
+
+- **Total links** - Count of all active links
+- **Clicks today** - Total clicks in the last 24 hours
+- **Clicks all-time** - Cumulative click count
+
+### Top Performers
+
+<Tabs>
+  <Tab title="Top Referrers">
+    Shows the top 5 traffic sources sending visitors to your links
+  </Tab>
+  <Tab title="Top Countries">
+    Geographic breakdown of the top 5 countries by click volume
+  </Tab>
+  <Tab title="Top Browsers">
+    Most common browsers used to access your links
+  </Tab>
+  <Tab title="Top Devices">
+    Device type breakdown (desktop, mobile, tablet)
+  </Tab>
+</Tabs>
+
+### Link-Specific Analytics
+
+Click **Analytics** on any link card to view detailed metrics:
+
+- **Click timeline** - Chart showing clicks over time
+- **Geographic distribution** - Country and city breakdown
+- **Device insights** - Browser, OS, and device type
+- **Referrer analysis** - Where clicks are coming from
+- **Recent clicks** - Individual click events with timestamps
+
+These analytics are extracted from the database and displayed using charts powered by Chart.js.
+
+## Domain Management
+
+Access the domains page at `/admin/domains` to view:
+
+- All configured domains from `DUBLY_DOMAINS`
+- DNS status for each domain (resolves to your server IP or not)
+- Manual refresh button to re-check DNS records
+
+<Note>
+Dubly automatically checks DNS resolution on startup and caches the results. Use the refresh button if you've recently updated DNS records.
+</Note>
+
+### DNS Verification
+
+The dashboard performs DNS lookups to verify each domain points to your server:
+
+```go
+// From internal/web/domains.go
+func (d *dnsCache) checkDomain(domain string) bool {
+    ips, err := net.LookupHost(domain)
+    if err != nil {
+        return false
+    }
+    // Check if any resolved IP matches server IPs
+    // ...
+}
+```
+
+This helps you identify configuration issues without leaving the admin panel.
+
+## Session Management
+
+Sessions are implemented using HTTP-only cookies:
+
+- **Duration**: Sessions persist until you explicitly log out
+- **Security**: Cookies are HTTP-only to prevent XSS attacks
+- **Logout**: Click **Logout** in the navigation to end your session
+
+From the implementation (`internal/web/session.go:18`):
+
+```go
+func createSession(w http.ResponseWriter, password string) {
+    token := sessionToken(password)
+    cookie := &http.Cookie{
+        Name:     sessionCookieName,
+        Value:    token,
+        Path:     "/admin",
+        HttpOnly: true,
+        SameSite: http.SameSiteStrictMode,
+    }
+    http.SetCookie(w, cookie)
+}
+```
+
+## Flash Messages
+
+The admin interface uses flash messages to provide feedback:
+
+- **Success** (green) - "Link created", "Link updated"
+- **Error** (red) - Validation errors, database failures
+- **Info** (blue) - General notifications
+
+Messages appear at the top of the page and are cleared after being displayed once.
+
+## HTMX Integration
+
+The dashboard uses HTMX for dynamic updates without full page reloads:
+
+- Search results update as you type
+- Pagination loads new pages inline
+- Delete actions remove cards without refresh
+
+This is detected via the `HX-Request` header (`internal/web/links.go:155`):
+
+```go
+if r.Header.Get("HX-Request") == "true" {
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    h.templates.RenderPartial(w, "templates/links_cards.html", "cards", data)
+    return
+}
+```
+
+## Keyboard Shortcuts
+
+While not explicitly documented in the source, the admin interface supports standard browser shortcuts:
+
+- `Ctrl+F` / `Cmd+F` - Focus search box (browser default)
+- `Enter` - Submit forms
+- `Esc` - Close modals (if using any)
+
+## Customization
+
+### App Name
+
+The dashboard title is customizable via the `DUBLY_APP_NAME` environment variable:
+
+```bash
+DUBLY_APP_NAME="My Link Shortener"
+```
+
+This appears in:
+- Page titles
+- Navigation header
+- Login page
+
+Default: `"Dubly"`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Link Management" icon="link" href="/features/link-management">
+    Learn about link creation via API
+  </Card>
+  <Card title="Analytics" icon="chart-line" href="/features/analytics">
+    Understand how analytics work
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Configure your Dubly instance
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Use the REST API
+  </Card>
+</CardGroup>

@@ -41,6 +41,7 @@
           {
             "group": "Core Features",
             "pages": [
+              "features/admin-dashboard",
               "features/link-management",
               "features/analytics",
               "features/custom-domains",
